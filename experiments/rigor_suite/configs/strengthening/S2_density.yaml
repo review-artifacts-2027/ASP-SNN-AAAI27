@@ -1,0 +1,12 @@
+# S2 — Non-uniform density profiles (sensor-like gradient). Prediction (Thm 6):
+# the normalized point-count descriptor lets the SSP de-prioritize sparse,
+# unreliable slices; dropping `count` (A3 cross) should erase the advantage.
+experiment: S2_density
+type: eval_corruption
+corruption: density_gradient
+severities: [0, 1, 2, 3, 4, 5]
+eval_thetas: [0.7]
+sweep:
+  - {name: ssp,           policy: ssp}
+  - {name: ssp_no_count,  policy: ssp, drop_desc: [count]}
+  - {name: fixed,         policy: fixed}

@@ -1,0 +1,89 @@
+# configs/s3dis_seg_t4.yaml — S3DIS scene segmentation
+# Protocol: train on Areas 1,2,3,4,6 — test on Area 5
+# Optimised for Google Colab T4 (16GB VRAM)
+
+# ── Dataset ────────────────────────────────────────────────────────────
+dataset: s3dis
+data_dir: data/s3dis
+num_points: 4096
+num_classes: 13
+use_category: false
+test_area: 5
+block_size: 1.0
+use_rgb: true
+use_height: true
+epoch_len: 3000          # Limit training blocks per epoch (speeds up training 16x)
+input_channels: 7        # xyz(3) + rgb(3) + height(1)
+
+# ── Slicing ────────────────────────────────────────────────────────────
+num_slices: 16
+points_per_slice: 128    # Reduced from 256 → saves ~40% VRAM per batch
+geo_dim: 8
+
+# ── Model ──────────────────────────────────────────────────────────────
+feat_dim: 256            # Reduced from 512 → ~4x fewer parameters in encoder
+k_edge: 16              # Reduced from 20 → faster EdgeConv kNN
+transformer_heads: 4
+transformer_ffn_dim: 512 # Reduced from 1024 → lighter transformer
+hidden_dim: 256          # Reduced from 512 → faster LIF belief state
+num_lif_layers: 2        # Reduced from 3 → fewer LIF layers, faster loop
+lif_leak: 0.9
+lif_threshold: 1.0
+d_ssp: 64               # Reduced from 128 → lighter SSP scoring
+T: 4                    # Reduced from 6 → 4 active steps fits well in T4
+point_feat_dim: 32       # Reduced from 64 → lighter per-point branch
+
+# ── Training (T4-tuned: smaller batch, AMP on) ─────────────────────────
+epochs: 100
+batch_size: 8            # T4 16GB is safe with 8; increase to 12 if no OOM
+lr: 0.001               # Lower LR since batch size is much smaller
+weight_decay: 0.01
+grad_clip: 1.0
+warmup_epochs: 5
+use_amp: true            # CRITICAL: keeps memory in fp16 on T4
+use_class_weights: true
+
+# ── Gumbel temperature ─────────────────────────────────────────────────
+tau_start: 1.0
+tau_end: 0.1
+tau_decay: 0.95
+
+# ── Augmentation ───────────────────────────────────────────────────────
+aug_rotate_z: true
+aug_scale_lo: 0.8
+aug_scale_hi: 1.25
+aug_translate: 0.1
+aug_jitter_sigma: 0.005
+aug_jitter_clip: 0.02
+aug_color_drop: 0.2
+aug_color_jitter: 0.05
+aug_color_bright: 0.1       # Brightness jitter multiplier
+aug_global_point_dropout: 0.1  # Randomly drop up to 10% points per block
+aug_elastic: false
+
+# ── Simplified PointWOLF Augmentation ─────────────────────────────────
+aug_pointwolf: true
+aug_pointwolf_num_anchors: 4
+aug_pointwolf_radius: 0.4
+aug_pointwolf_scale_lo: 0.75
+aug_pointwolf_scale_hi: 1.25
+
+# ── PointCutMix Augmentation ──────────────────────────────────────────
+aug_cutmix: true
+aug_cutmix_prob: 0.5
+
+
+# ── Neuromorphic Augmentation ──────────────────────────────────────────
+spike_dropout: 0.1          # 10% chance to drop spike per neuron timestep
+
+# ── Knowledge Distillation (KD) ────────────────────────────────────────
+kd_teacher_epochs: 30       # Set to 0 to disable teacher pre-training
+kd_temp: 4.0                # Temperature for soft target matching
+kd_lam: 0.5                 # KD loss weighting factor
+
+# ── Logging ────────────────────────────────────────────────────────────
+eval_interval: 5
+log_dir: logs
+ckpt_dir: checkpoints
+seed: 42
+num_workers: 0           # Set to 0 to prevent PyTorch dataloader worker deadlocks on Kaggle/Colab

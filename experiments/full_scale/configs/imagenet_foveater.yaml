@@ -1,0 +1,44 @@
+# configs/imagenet_foveater.yaml - FoveaTer-style ASP on ImageNet/ImageNet-100
+
+# Dataset
+dataset: imagenet
+data_dir: data/imagenet
+num_classes: 1000
+image_size: 224
+resize_size: 256
+smoke: false
+
+# FoveaTer model
+feature_grid: 14
+embed_dim: 192
+depth: 9
+num_heads: 3
+mlp_ratio: 4.0
+dropout: 0.0
+max_fixations: 5
+max_tokens: 29
+accumulator_decay: 0.5
+ior_strength: 1.0
+exit_threshold: 0.70
+
+# Training
+epochs: 500
+batch_size: 128
+lr: 1e-5
+min_lr: 1e-6
+weight_decay: 1e-8
+grad_clip: 1.0
+warmup_epochs: 5
+label_smooth: 0.1
+lambda_aux: 1.0
+lambda_exit: 0.1
+use_amp: true
+
+# Logging / runtime
+eval_interval: 1
+log_dir: logs
+ckpt_dir: checkpoints
+seed: 42
+num_workers: 8
+verbose_every: 50
+debug_steps: 0

@@ -1,0 +1,18 @@
+# A4 — d_ssp dimensionality. Theorem 5 (rank cap): the bilinear form
+# B = Wk^T Wq has rank <= min(d_ssp, 6), so accuracy must plateau for
+# d_ssp >= 6; larger d_ssp only changes optimization conditioning and params.
+# rank8 variant = ~2K-parameter budget (exact for r >= 6).
+# Logged: ssp_param_count, accuracy, avg_slices, selection Kendall tau vs d=64.
+experiment: A4_dssp
+type: standard
+eval_thetas: [0.7]
+sweep:
+  - {name: d2,    d_ssp: 2}
+  - {name: d4,    d_ssp: 4}
+  - {name: d6,    d_ssp: 6}
+  - {name: d8,    d_ssp: 8}
+  - {name: d16,   d_ssp: 16}
+  - {name: d32,   d_ssp: 32}
+  - {name: d64,   d_ssp: 64}
+  - {name: d128,  d_ssp: 128}
+  - {name: d64_rank8, d_ssp: 64, ssp_rank: 8}   # 2K-parameter budget variant

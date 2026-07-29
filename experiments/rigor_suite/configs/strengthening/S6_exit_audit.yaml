@@ -1,0 +1,10 @@
+# S6 — Exit-time distribution audit (backs Theorem 2 failure-mode corollary).
+# Logged: per-sample exit histogram (bimodality test: dip statistic proxy),
+# per-class mean exit step, correlation(exit step, per-class error),
+# fraction of samples with non-positive empirical drift (predicted censoring
+# mass at T_max).
+experiment: S6_exit_audit
+type: standard
+eval_thetas: [0.7]
+sweep:
+  - {name: baseline}

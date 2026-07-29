@@ -1,0 +1,14 @@
+torch>=2.1
+torchvision>=0.16
+numpy>=1.24
+h5py>=3.8
+tqdm>=4.65
+pyyaml>=6.0
+scipy>=1.10
+scikit-learn>=1.2
+matplotlib>=3.7
+trimesh>=4.0
+huggingface_hub>=0.20
+gdown>=5.0
+kagglehub>=0.3.0
+kaggle>=1.6

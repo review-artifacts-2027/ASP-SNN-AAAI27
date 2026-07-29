@@ -1,0 +1,23 @@
+# CIFAR-10 adapted for the SNN pipeline: 4x4 grid of 8x8 patches = K=16 slices.
+dataset: cifar10
+num_classes: 10
+modality: patches
+data_root: ./data
+patch_dim: 192
+k_slices: 16
+d_model: 128
+enc_hidden: 128
+d_ssp: 64
+ssp_rank: 0
+policy: ssp
+use_mask: true
+theta: 0.7
+epochs: 100
+lr: 1.0e-3
+batch_size: 128
+lambda_exit: 0.1
+lambda_sparse: 0.01
+tau_start: 1.0
+tau_end: 0.5
+eval_every: 5
+seeds: [0, 1, 2, 3, 4]

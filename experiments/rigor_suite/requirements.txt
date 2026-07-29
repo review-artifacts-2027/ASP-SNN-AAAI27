@@ -1,0 +1,7 @@
+torch>=2.0
+numpy
+pyyaml
+matplotlib        # plots (optional at runtime)
+h5py              # ScanObjectNN loader only
+torchvision       # CIFAR-10/100 adapters only
+scipy             # exact stats at full scale (fallbacks included)

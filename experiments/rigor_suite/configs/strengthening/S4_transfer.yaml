@@ -1,0 +1,14 @@
+# S4 — Frozen-policy transfer. The SSP interface is only (u, g) with a shared
+# 6-D descriptor space, so a policy trained on source should transfer.
+# Protocol: load source ckpt, freeze SSP (Wq always; Wk if d_model matches),
+# retrain everything else on target; compare vs from-scratch target training.
+# Supports point->point (modelnet40 -> scanobjectnn) and cross-modal
+# (modelnet40 -> cifar10 patches).
+experiment: S4_transfer
+type: transfer
+source_ckpt: results/A1_theta/synthetic/seed0/baseline/model.pt  # override per run
+freeze: [Wq, Wk]
+eval_thetas: [0.7]
+sweep:
+  - {name: transfer_frozen}
+  - {name: scratch}

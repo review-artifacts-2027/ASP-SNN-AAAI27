@@ -1,0 +1,23 @@
+dataset: modelnet10
+num_classes: 10
+modality: points
+data_root: ./data
+n_points: 1024
+k_slices: 16
+points_per_slice: 128
+d_model: 128
+enc_hidden: 64
+d_ssp: 64
+ssp_rank: 0            # set 8 for the ~2K-parameter budget variant (exact, Thm 5)
+policy: ssp
+use_mask: true
+theta: 0.7
+epochs: 150
+lr: 1.0e-3
+batch_size: 128
+lambda_exit: 0.1
+lambda_sparse: 0.01
+tau_start: 1.0
+tau_end: 0.5
+eval_every: 5
+seeds: [0, 1, 2, 3, 4]

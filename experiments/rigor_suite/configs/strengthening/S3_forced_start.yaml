@@ -1,0 +1,11 @@
+# S3 — Adversarial forced start: the first f selections are FORCED to the
+# policy's lowest-ranked slices, then the policy resumes. Tests the closed-loop
+# claim (Thm 3): membrane feedback should recover (accuracy gap -> 0 within a
+# few steps), while open-loop geometry_only saliency cannot re-plan.
+experiment: S3_forced_start
+type: forced_start
+force_steps: [0, 1, 2, 4]
+eval_thetas: [0.7]
+sweep:
+  - {name: ssp,           policy: ssp}
+  - {name: geometry_only, policy: geometry_only}

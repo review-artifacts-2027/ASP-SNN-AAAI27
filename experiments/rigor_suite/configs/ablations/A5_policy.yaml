@@ -1,0 +1,13 @@
+# A5 — Membrane state vs baselines. Theorem 3 predicts ordering
+# ssp > geometry_only > fixed ~ random on accuracy-at-budget, with the
+# ssp-vs-geometry_only gap = value of closed-loop membrane feedback.
+# Logged: accuracy@k for k=1..16 (anytime curve), avg_slices at theta,
+# exit-time CDFs (stochastic-dominance check for Theorem 7).
+experiment: A5_policy
+type: standard
+eval_thetas: [0.5, 0.7, 0.9]
+sweep:
+  - {name: ssp,           policy: ssp}
+  - {name: random,        policy: random}
+  - {name: fixed,         policy: fixed}
+  - {name: geometry_only, policy: geometry_only}

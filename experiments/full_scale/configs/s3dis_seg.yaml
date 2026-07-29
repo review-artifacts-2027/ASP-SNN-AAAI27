@@ -1,0 +1,67 @@
+# configs/s3dis_seg.yaml — S3DIS scene segmentation
+# Protocol: train on Areas 1,2,3,4,6 — test on Area 5
+# Target: 55-62% mIoU
+# Optimised for NVIDIA H100 80GB
+
+# ── Dataset ────────────────────────────────────────────────────────────
+dataset: s3dis
+data_dir: data/s3dis
+num_points: 4096
+num_classes: 13
+use_category: false
+test_area: 5
+block_size: 1.0
+use_rgb: true
+use_height: true
+input_channels: 7        # xyz(3) + rgb(3) + height(1)
+
+# ── Slicing ────────────────────────────────────────────────────────────
+num_slices: 16
+points_per_slice: 256
+geo_dim: 8
+
+# ── Model ──────────────────────────────────────────────────────────────
+feat_dim: 512
+k_edge: 20
+transformer_heads: 4
+transformer_ffn_dim: 1024
+hidden_dim: 512
+num_lif_layers: 3
+lif_leak: 0.9
+lif_threshold: 1.0
+d_ssp: 128
+T: 6
+point_feat_dim: 64
+
+# ── Training (H100-tuned: larger batch, fewer epochs) ──────────────────
+epochs: 100              # 100 is sufficient for S3DIS (most papers use 100-300)
+batch_size: 64           # H100 80GB can easily handle 64; was 16 = 4x increase
+lr: 0.002                # Scaled with sqrt(4) for stability vs original lr=1e-3
+weight_decay: 0.01
+grad_clip: 1.0
+warmup_epochs: 5
+use_amp: true
+use_class_weights: true
+
+# ── Gumbel temperature ─────────────────────────────────────────────────
+tau_start: 1.0
+tau_end: 0.1
+tau_decay: 0.95
+
+# ── Augmentation (S3DIS-specific with RGB) ─────────────────────────────
+aug_rotate_z: true
+aug_scale_lo: 0.9
+aug_scale_hi: 1.1
+aug_translate: 0.1
+aug_jitter_sigma: 0.005
+aug_jitter_clip: 0.02
+aug_color_drop: 0.2
+aug_color_jitter: 0.05
+aug_elastic: false
+
+# ── Logging ────────────────────────────────────────────────────────────
+eval_interval: 5
+log_dir: logs
+ckpt_dir: checkpoints
+seed: 42
+num_workers: 8           # H100 cluster typically has 32+ CPUs

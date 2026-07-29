@@ -1,0 +1,9 @@
+# S5 — Calibration & selective risk (backs Theorem 1). Logged: ECE, reliability
+# bins, risk-coverage curve + AURC, risk_exited vs the (C-1)(1-theta)/C bound
+# across the full theta grid, with and without temperature scaling.
+experiment: S5_calibration
+type: standard
+eval_thetas: [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+temperature_scaling: true
+sweep:
+  - {name: baseline}

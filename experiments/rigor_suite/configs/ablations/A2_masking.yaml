@@ -1,0 +1,11 @@
+# A2 — Remove the -inf visited-anchor mask. Theorem 4 predicts: revisit rate
+# grows, distinct-slice coverage plateaus below K, margin drift collapses,
+# accuracy AND latency degrade together (the "energy paradox").
+# Logged: revisit_rate, final_distinct, distinct_curve, delta_hat, accuracy,
+# avg_slices at each theta.
+experiment: A2_masking
+type: standard
+eval_thetas: [0.5, 0.7, 0.9]
+sweep:
+  - {name: mask_on,  use_mask: true}
+  - {name: mask_off, use_mask: false}

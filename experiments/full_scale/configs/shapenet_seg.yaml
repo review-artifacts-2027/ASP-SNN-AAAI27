@@ -1,0 +1,60 @@
+# configs/shapenet_seg.yaml — ShapeNetPart part segmentation
+# Target: 83-85% Instance mIoU
+
+# ── Dataset ────────────────────────────────────────────────────────────
+dataset: shapenet
+data_dir: data/shapenet_part_seg_hdf5_data
+num_points: 2048
+num_classes: 50
+num_categories: 16
+use_category: true
+
+# ── Slicing ────────────────────────────────────────────────────────────
+num_slices: 16
+points_per_slice: 128
+geo_dim: 8
+
+# ── Model ──────────────────────────────────────────────────────────────
+feat_dim: 512
+k_edge: 20
+transformer_heads: 4
+transformer_ffn_dim: 1024
+hidden_dim: 512
+num_lif_layers: 3
+lif_leak: 0.9
+lif_threshold: 1.0
+d_ssp: 128
+T: 6
+point_feat_dim: 64
+
+# ── Training ───────────────────────────────────────────────────────────
+epochs: 500
+batch_size: 32
+lr: 3e-4
+encoder_lr_scale: 0.1
+weight_decay: 0.01
+grad_clip: 1.0
+warmup_epochs: 10
+use_amp: true
+
+# ── Gumbel temperature ─────────────────────────────────────────────────
+tau_start: 1.0
+tau_end: 0.1
+tau_decay: 0.95
+
+# ── Augmentation ───────────────────────────────────────────────────────
+aug_rotate_z: true
+aug_so3_tilt: 0.26
+aug_scale_lo: 0.8
+aug_scale_hi: 1.25
+aug_translate: 0.1
+aug_jitter_sigma: 0.01
+aug_jitter_clip: 0.05
+aug_slice_dropout: 0.1
+
+# ── Logging ────────────────────────────────────────────────────────────
+eval_interval: 5
+log_dir: logs
+ckpt_dir: checkpoints
+seed: 42
+num_workers: 4

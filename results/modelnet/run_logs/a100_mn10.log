@@ -1,0 +1,196 @@
+GPU     : NVIDIA H100 NVL
+VRAM    : 100.0 GB
+PyTorch : 2.11.0+cu128
+BF16    : True
+compile : True
+
+[Config]
+  datasets=['ModelNet10']  epochs=300  batch=64
+  dim=384  depth=12  timestep=2
+  groups=128  group_size=32  expand=1.1
+  asp_steps=4  kd=True  kd_temp=4.0
+  ckpt=./ckpts_mn10  data=./data
+
+[Download] ModelNet10 ...
+  ModelNet10: cached at ./data/ModelNet10
+
+============================================================================
+Dataset: ModelNet10  classes=10
+Backbone: official-like SPM group encoder + Mamba-lite mixer
+============================================================================
+  [train] Loading 3991 files ...
+  [train] Loaded. Shape: (3991, 1024, 3)
+  [test] Loading 908 files ...
+  [test] Loaded. Shape: (908, 1024, 3)
+
+[Teacher] params=15,042,442
+  [Teacher] Ep   5/150 tr=0.8185 val=0.7830 * lr=0.00020 226s
+  [Teacher] Ep  10/150 tr=0.8808 val=0.8502 * lr=0.00037 2s
+  [Teacher] Ep  15/150 tr=0.8931 val=0.8800 * lr=0.00053 2s
+  [Teacher] Ep  20/150 tr=0.8982 val=0.8756   lr=0.00070 2s
+  [Teacher] Ep  25/150 tr=0.8793 val=0.8656   lr=0.00087 2s
+  [Teacher] Ep  30/150 tr=0.8385 val=0.6322   lr=0.00100 2s
+  [Teacher] Ep  35/150 tr=0.8105 val=0.8029   lr=0.00100 2s
+  [Teacher] Ep  40/150 tr=0.8468 val=0.8293   lr=0.00098 2s
+  [Teacher] Ep  45/150 tr=0.8180 val=0.8535   lr=0.00096 2s
+  [Teacher] Ep  50/150 tr=0.8531 val=0.8535   lr=0.00093 2s
+  [Teacher] Ep  55/150 tr=0.8697 val=0.8634   lr=0.00090 2s
+  [Teacher] Ep  60/150 tr=0.8697 val=0.8778   lr=0.00085 2s
+  [Teacher] Ep  65/150 tr=0.8881 val=0.8700   lr=0.00080 2s
+  [Teacher] Ep  70/150 tr=0.8982 val=0.8855 * lr=0.00075 2s
+  [Teacher] Ep  75/150 tr=0.8997 val=0.8866 * lr=0.00069 2s
+  [Teacher] Ep  80/150 tr=0.9110 val=0.8733   lr=0.00063 2s
+  [Teacher] Ep  85/150 tr=0.9224 val=0.8976 * lr=0.00057 2s
+  [Teacher] Ep  90/150 tr=0.9335 val=0.8877   lr=0.00050 2s
+  [Teacher] Ep  95/150 tr=0.9378 val=0.9075 * lr=0.00043 2s
+  [Teacher] Ep 100/150 tr=0.9438 val=0.9042   lr=0.00037 2s
+  [Teacher] Ep 105/150 tr=0.9483 val=0.8932   lr=0.00031 2s
+  [Teacher] Ep 110/150 tr=0.9546 val=0.9075   lr=0.00025 2s
+  [Teacher] Ep 115/150 tr=0.9642 val=0.9031   lr=0.00020 2s
+  [Teacher] Ep 120/150 tr=0.9672 val=0.8976   lr=0.00015 2s
+  [Teacher] Ep 125/150 tr=0.9713 val=0.9042   lr=0.00010 2s
+  [Teacher] Ep 130/150 tr=0.9730 val=0.8998   lr=0.00007 2s
+  [Teacher] Ep 135/150 tr=0.9761 val=0.8965   lr=0.00004 2s
+  [Teacher] Ep 140/150 tr=0.9791 val=0.9064   lr=0.00002 2s
+  [Teacher] Ep 145/150 tr=0.9788 val=0.9031   lr=0.00001 2s
+  [Teacher] Ep 150/150 tr=0.9808 val=0.9053   lr=0.00001 2s
+[KD] Distilling from teacher (best val=90.75%).
+
+[SPM] params=18,453,386
+  [SPM] Ep   5/300 tr=0.6106 val=0.2974 * lr=0.00020 116s
+  [SPM] Ep  10/300 tr=0.7742 val=0.5474 * lr=0.00037 5s
+  [SPM] Ep  15/300 tr=0.8289 val=0.4537   lr=0.00053 4s
+  [SPM] Ep  20/300 tr=0.8629 val=0.6542 * lr=0.00070 5s
+  [SPM] Ep  25/300 tr=0.8795 val=0.8205 * lr=0.00087 5s
+  [SPM] Ep  30/300 tr=0.8959 val=0.6828   lr=0.00100 5s
+  [SPM] Ep  35/300 tr=0.9040 val=0.8084   lr=0.00100 5s
+  [SPM] Ep  40/300 tr=0.9148 val=0.8392 * lr=0.00100 5s
+  [SPM] Ep  45/300 tr=0.9239 val=0.8623 * lr=0.00099 5s
+  [SPM] Ep  50/300 tr=0.9204 val=0.8778 * lr=0.00099 5s
+  [SPM] Ep  55/300 tr=0.9299 val=0.8447   lr=0.00098 5s
+  [SPM] Ep  60/300 tr=0.9372 val=0.8767   lr=0.00097 4s
+  [SPM] Ep  65/300 tr=0.9317 val=0.8700   lr=0.00096 4s
+  [SPM] Ep  70/300 tr=0.9383 val=0.8579   lr=0.00095 5s
+  [SPM] Ep  75/300 tr=0.9403 val=0.8590   lr=0.00093 5s
+  [SPM] Ep  80/300 tr=0.9410 val=0.8910 * lr=0.00092 5s
+  [SPM] Ep  85/300 tr=0.9461 val=0.8778   lr=0.00090 5s
+  [SPM] Ep  90/300 tr=0.9458 val=0.8965 * lr=0.00088 5s
+  [SPM] Ep  95/300 tr=0.9463 val=0.8767   lr=0.00086 4s
+  [SPM] Ep 100/300 tr=0.9473 val=0.8899   lr=0.00084 4s
+  [SPM] Ep 105/300 tr=0.9458 val=0.8921   lr=0.00082 5s
+  [SPM] Ep 110/300 tr=0.9504 val=0.8414   lr=0.00080 4s
+  [SPM] Ep 115/300 tr=0.9501 val=0.8789   lr=0.00077 5s
+  [SPM] Ep 120/300 tr=0.9539 val=0.8866   lr=0.00075 4s
+  [SPM] Ep 125/300 tr=0.9509 val=0.9042 * lr=0.00072 5s
+  [SPM] Ep 130/300 tr=0.9546 val=0.8998   lr=0.00070 4s
+  [SPM] Ep 135/300 tr=0.9572 val=0.8954   lr=0.00067 5s
+  [SPM] Ep 140/300 tr=0.9564 val=0.8822   lr=0.00064 4s
+  [SPM] Ep 145/300 tr=0.9574 val=0.9009   lr=0.00062 4s
+  [SPM] Ep 150/300 tr=0.9572 val=0.9009   lr=0.00059 4s
+  [SPM] Ep 155/300 tr=0.9612 val=0.8943   lr=0.00056 4s
+  [SPM] Ep 160/300 tr=0.9622 val=0.9009   lr=0.00053 4s
+  [SPM] Ep 165/300 tr=0.9589 val=0.9020   lr=0.00050 4s
+  [SPM] Ep 170/300 tr=0.9642 val=0.8778   lr=0.00047 5s
+  [SPM] Ep 175/300 tr=0.9652 val=0.8987   lr=0.00044 4s
+  [SPM] Ep 180/300 tr=0.9652 val=0.9163 * lr=0.00041 5s
+  [SPM] Ep 185/300 tr=0.9705 val=0.9020   lr=0.00038 4s
+  [SPM] Ep 190/300 tr=0.9635 val=0.9064   lr=0.00036 4s
+  [SPM] Ep 195/300 tr=0.9708 val=0.9064   lr=0.00033 5s
+  [SPM] Ep 200/300 tr=0.9730 val=0.9097   lr=0.00030 5s
+  [SPM] Ep 205/300 tr=0.9756 val=0.9097   lr=0.00028 4s
+  [SPM] Ep 210/300 tr=0.9751 val=0.9097   lr=0.00025 5s
+  [SPM] Ep 215/300 tr=0.9753 val=0.9141   lr=0.00023 5s
+  [SPM] Ep 220/300 tr=0.9761 val=0.9075   lr=0.00020 4s
+  [SPM] Ep 225/300 tr=0.9768 val=0.9130   lr=0.00018 4s
+  [SPM] Ep 230/300 tr=0.9778 val=0.9075   lr=0.00016 4s
+  [SPM] Ep 235/300 tr=0.9801 val=0.9053   lr=0.00014 4s
+  [SPM] Ep 240/300 tr=0.9788 val=0.9075   lr=0.00012 5s
+  [SPM] Ep 245/300 tr=0.9801 val=0.9075   lr=0.00010 4s
+  [SPM] Ep 250/300 tr=0.9798 val=0.9075   lr=0.00008 4s
+  [SPM] Ep 255/300 tr=0.9773 val=0.9108   lr=0.00007 4s
+  [SPM] Ep 260/300 tr=0.9824 val=0.9064   lr=0.00005 4s
+  [SPM] Ep 265/300 tr=0.9811 val=0.9075   lr=0.00004 4s
+  [SPM] Ep 270/300 tr=0.9801 val=0.9152   lr=0.00003 5s
+  [SPM] Ep 275/300 tr=0.9824 val=0.9053   lr=0.00002 4s
+  [SPM] Ep 280/300 tr=0.9836 val=0.9119   lr=0.00001 4s
+  [SPM] Ep 285/300 tr=0.9811 val=0.9031   lr=0.00001 4s
+  [SPM] Ep 290/300 tr=0.9829 val=0.9108   lr=0.00001 4s
+  [SPM] Ep 295/300 tr=0.9814 val=0.9086   lr=0.00001 4s
+  [SPM] Ep 300/300 tr=0.9801 val=0.9075   lr=0.00001 4s
+
+[ASP] params=18,672,010
+  [ASP] Ep   5/300 tr=0.6300 val=0.3700 * slices=4.00/4 tau=0.852 lr=0.00020 15s
+  [ASP] Ep  10/300 tr=0.7752 val=0.6861 * slices=4.00/4 tau=0.698 lr=0.00037 15s
+  [ASP] Ep  15/300 tr=0.8390 val=0.5782   slices=4.00/4 tau=0.571 lr=0.00053 15s
+  [ASP] Ep  20/300 tr=0.8604 val=0.6233   slices=4.00/4 tau=0.468 lr=0.00070 15s
+  [ASP] Ep  25/300 tr=0.8836 val=0.7588 * slices=3.99/4 tau=0.383 lr=0.00087 15s
+  [ASP] Ep  30/300 tr=0.8856 val=0.8007 * slices=4.00/4 tau=0.313 lr=0.00100 15s
+  [ASP] Ep  35/300 tr=0.9062 val=0.7070   slices=4.00/4 tau=0.257 lr=0.00100 15s
+  [ASP] Ep  40/300 tr=0.9138 val=0.7456   slices=3.61/4 tau=0.210 lr=0.00100 15s
+  [ASP] Ep  45/300 tr=0.9151 val=0.8590 * slices=3.97/4 tau=0.172 lr=0.00099 15s
+  [ASP] Ep  50/300 tr=0.9226 val=0.8800 * slices=3.97/4 tau=0.141 lr=0.00099 15s
+  [ASP] Ep  55/300 tr=0.9330 val=0.7093   slices=3.83/4 tau=0.115 lr=0.00098 15s
+  [ASP] Ep  60/300 tr=0.9332 val=0.7181   slices=4.00/4 tau=0.100 lr=0.00097 15s
+  [ASP] Ep  65/300 tr=0.9365 val=0.8877 * slices=3.96/4 tau=0.100 lr=0.00096 15s
+  [ASP] Ep  70/300 tr=0.9380 val=0.8656   slices=3.96/4 tau=0.100 lr=0.00095 19s
+  [ASP] Ep  75/300 tr=0.9443 val=0.8722   slices=3.99/4 tau=0.100 lr=0.00093 19s
+  [ASP] Ep  80/300 tr=0.9446 val=0.8965 * slices=3.97/4 tau=0.100 lr=0.00092 20s
+  [ASP] Ep  85/300 tr=0.9433 val=0.8667   slices=3.96/4 tau=0.100 lr=0.00090 18s
+  [ASP] Ep  90/300 tr=0.9461 val=0.8282   slices=4.00/4 tau=0.100 lr=0.00088 18s
+  [ASP] Ep  95/300 tr=0.9435 val=0.8976 * slices=3.96/4 tau=0.100 lr=0.00086 19s
+  [ASP] Ep 100/300 tr=0.9461 val=0.8910   slices=3.83/4 tau=0.100 lr=0.00084 17s
+  [ASP] Ep 105/300 tr=0.9473 val=0.8524   slices=3.96/4 tau=0.100 lr=0.00082 17s
+  [ASP] Ep 110/300 tr=0.9526 val=0.8877   slices=3.99/4 tau=0.100 lr=0.00080 18s
+  [ASP] Ep 115/300 tr=0.9572 val=0.8645   slices=3.96/4 tau=0.100 lr=0.00077 19s
+  [ASP] Ep 120/300 tr=0.9604 val=0.8899   slices=3.96/4 tau=0.100 lr=0.00075 18s
+  [ASP] Ep 125/300 tr=0.9539 val=0.8480   slices=3.92/4 tau=0.100 lr=0.00072 19s
+  [ASP] Ep 130/300 tr=0.9592 val=0.8689   slices=3.97/4 tau=0.100 lr=0.00070 19s
+  [ASP] Ep 135/300 tr=0.9564 val=0.8976   slices=3.76/4 tau=0.100 lr=0.00067 20s
+  [ASP] Ep 140/300 tr=0.9584 val=0.9020 * slices=3.75/4 tau=0.100 lr=0.00064 19s
+  [ASP] Ep 145/300 tr=0.9642 val=0.9020   slices=3.96/4 tau=0.100 lr=0.00062 20s
+  [ASP] Ep 150/300 tr=0.9607 val=0.9064 * slices=3.82/4 tau=0.100 lr=0.00059 19s
+  [ASP] Ep 155/300 tr=0.9604 val=0.8987   slices=3.96/4 tau=0.100 lr=0.00056 20s
+  [ASP] Ep 160/300 tr=0.9665 val=0.9141 * slices=3.96/4 tau=0.100 lr=0.00053 19s
+  [ASP] Ep 165/300 tr=0.9609 val=0.9020   slices=3.79/4 tau=0.100 lr=0.00050 20s
+  [ASP] Ep 170/300 tr=0.9645 val=0.8976   slices=3.96/4 tau=0.100 lr=0.00047 20s
+  [ASP] Ep 175/300 tr=0.9688 val=0.9009   slices=3.96/4 tau=0.100 lr=0.00044 17s
+  [ASP] Ep 180/300 tr=0.9660 val=0.8767   slices=3.83/4 tau=0.100 lr=0.00041 15s
+  [ASP] Ep 185/300 tr=0.9718 val=0.9075   slices=3.89/4 tau=0.100 lr=0.00038 15s
+  [ASP] Ep 190/300 tr=0.9693 val=0.9086   slices=3.90/4 tau=0.100 lr=0.00036 16s
+  [ASP] Ep 195/300 tr=0.9693 val=0.8877   slices=3.96/4 tau=0.100 lr=0.00033 16s
+  [ASP] Ep 200/300 tr=0.9723 val=0.9075   slices=3.96/4 tau=0.100 lr=0.00030 16s
+  [ASP] Ep 205/300 tr=0.9768 val=0.8987   slices=3.89/4 tau=0.100 lr=0.00028 16s
+  [ASP] Ep 210/300 tr=0.9745 val=0.9108   slices=3.89/4 tau=0.100 lr=0.00025 16s
+  [ASP] Ep 215/300 tr=0.9735 val=0.9086   slices=3.96/4 tau=0.100 lr=0.00023 16s
+  [ASP] Ep 220/300 tr=0.9776 val=0.9130   slices=3.96/4 tau=0.100 lr=0.00020 15s
+  [ASP] Ep 225/300 tr=0.9756 val=0.9130   slices=3.99/4 tau=0.100 lr=0.00018 16s
+  [ASP] Ep 230/300 tr=0.9793 val=0.9097   slices=3.96/4 tau=0.100 lr=0.00016 16s
+  [ASP] Ep 235/300 tr=0.9788 val=0.9119   slices=3.68/4 tau=0.100 lr=0.00014 16s
+  [ASP] Ep 240/300 tr=0.9819 val=0.9064   slices=3.96/4 tau=0.100 lr=0.00012 16s
+  [ASP] Ep 245/300 tr=0.9773 val=0.9064   slices=3.82/4 tau=0.100 lr=0.00010 16s
+  [ASP] Ep 250/300 tr=0.9791 val=0.9097   slices=3.89/4 tau=0.100 lr=0.00008 16s
+  [ASP] Ep 255/300 tr=0.9801 val=0.9075   slices=3.96/4 tau=0.100 lr=0.00007 16s
+  [ASP] Ep 260/300 tr=0.9788 val=0.9130   slices=3.96/4 tau=0.100 lr=0.00005 16s
+  [ASP] Ep 265/300 tr=0.9793 val=0.9185 * slices=3.75/4 tau=0.100 lr=0.00004 16s
+  [ASP] Ep 270/300 tr=0.9808 val=0.9119   slices=3.97/4 tau=0.100 lr=0.00003 16s
+  [ASP] Ep 275/300 tr=0.9796 val=0.9086   slices=3.96/4 tau=0.100 lr=0.00002 16s
+  [ASP] Ep 280/300 tr=0.9811 val=0.9196 * slices=3.75/4 tau=0.100 lr=0.00001 17s
+  [ASP] Ep 285/300 tr=0.9844 val=0.9097   slices=3.96/4 tau=0.100 lr=0.00001 16s
+  [ASP] Ep 290/300 tr=0.9821 val=0.9075   slices=3.82/4 tau=0.100 lr=0.00001 16s
+  [ASP] Ep 295/300 tr=0.9839 val=0.9207 * slices=3.96/4 tau=0.100 lr=0.00001 15s
+  [ASP] Ep 300/300 tr=0.9811 val=0.9141   slices=3.96/4 tau=0.100 lr=0.00001 15s
+
+Summary ModelNet10
+  Teacher  : 90.75%
+  SPM best : 91.63%
+  ASP best : 92.07%
+  Delta    : +0.44 pp
+  ASP chunks: 3.96/4  Firing rate: 0.2711
+
+============================================================================
+FINAL RESULTS
+============================================================================
+Dataset          Teacher       SPM       ASP     Delta     Chunks
+ModelNet10        90.75%    91.63%    92.07%    +0.44   3.96/4
+
+Outputs: ./ckpts_mn10
