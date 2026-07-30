@@ -1,0 +1,148 @@
+# configs/shapenet_seg.yaml — ShapeNetPart part segmentation
+# Batch 5 target: 85.5 – 86.5 Ins mIoU with system-level α = 5-10x.
+# The efficiency headline number for the paper lands in this batch.
+
+# ── Dataset ────────────────────────────────────────────────────────────
+dataset: shapenet
+data_dir: data/shapenet_part_seg_hdf5_data
+num_points: 2048
+num_classes: 50
+num_categories: 16
+use_category: true
+
+# ── Slicing — Coarse ───────────────────────────────────────────────────
+num_slices: 16
+points_per_slice: 128
+geo_dim: 8
+
+# ── B4: Slicing — Fine ─────────────────────────────────────────────────
+use_multiscale: true
+num_slices_fine: 64
+points_per_slice_fine: 32
+fine_feat_dim: 128
+fine_k_edge: 8
+
+# ── Model — Coarse ─────────────────────────────────────────────────────
+feat_dim: 512
+k_edge: 20
+transformer_heads: 4
+transformer_ffn_dim: 1024
+hidden_dim: 512
+num_lif_layers: 3
+lif_leak: 0.9
+lif_threshold: 1.0
+d_ssp: 128
+T: 6
+point_feat_dim: 64
+
+# ── B3 (Batch 5): Spiking Coarse Encoder ────────────────────────────────
+# 'analog'  : original EdgeConv with ReLU. α_system ≈ 1.1x with everything else spiking.
+# 'spiking' : ReLU replaced with LIF neurons; encoder runs T_enc timesteps.
+#             Shifts encoder compute from MAC to AC. This is what pushes
+#             α_system from ~1.2x (Batch 4) to 5-10x (Batch 5).
+#
+# Reference: Ren et al. Spiking PointNet (NeurIPS 2023) — direct-training
+# spiking encoder for point clouds; Yao et al. Spike-driven Transformer V2
+# (ICLR 2024) — everything-spiking architecture; SPM (arXiv 2504.14371).
+encoder_type: spiking
+encoder_T: 4
+encoder_lif_leak: 0.9
+encoder_lif_threshold: 1.0
+
+# ── B3: Warm-start from an analog-trained checkpoint (highly recommended) ─
+# Spiking encoders trained from scratch typically lose 1-3 Ins mIoU vs.
+# analog. Warm-starting the encoder's Conv/Linear weights from a well-
+# trained analog checkpoint recovers most/all of that gap because the
+# static-input direct-training convention lets the same weights work for
+# both analog and spiking forward passes (LIF replaces ReLU; the linear
+# projections are identical).
+#
+# Workflow:
+#   1) Train Batches 1-4 with encoder_type: analog -> checkpoints/shapenet_best.pt
+#   2) Set warm_start_from below to that checkpoint path
+#   3) Change encoder_type to spiking (already done above)
+#   4) Retrain for ~150 epochs (see epochs override below)
+#
+# When warm_start_from is null, training starts from scratch.
+# Only the encoder's compatible tensors are loaded; strict=False for all
+# other keys so the LIF-specific tensors (learnable leak/threshold, MPBN
+# running stats) initialize fresh.
+warm_start_from: null                # e.g. "checkpoints/shapenet_best_analog.pt"
+
+# ── B2 (Batch 4): Segmentation head type ───────────────────────────────
+seg_head_type: spiking
+seg_head_T: 2
+seg_head_lif_leak: 0.9
+seg_head_lif_threshold: 1.0
+
+# ── SSP ablation ───────────────────────────────────────────────────────
+ssp_mode: learned
+
+# ── A3 (Batch 1): Category-conditional SSP ─────────────────────────────
+cat_emb_dim: 8
+
+# ── Tier-1 SNN training best practices ─────────────────────────────────
+lif_learnable: true
+lif_use_mpbn: true
+
+# ── A0 (Batch 2): Dense TET loss ───────────────────────────────────────
+loss_mode: dense_tet
+tet_lambda: 0.05
+
+# ── A1 (Batch 2): Soft feature propagation ─────────────────────────────
+use_soft_fp: true
+fp_k: 3
+fp_epsilon: 1e-8
+
+# ── B1 (Batch 3): Boundary-Aware ASP ───────────────────────────────────
+use_boundary_aware: true
+boundary_hidden: 128
+bnd_k: 10
+bnd_loss_weight: 0.1
+
+# ── Training ───────────────────────────────────────────────────────────
+# Batch 5 training notes:
+#   - Warmup up from 15 -> 25: spiking encoder + spiking seg head need
+#     more time to reach stable firing regimes before cosine decay bites.
+#   - encoder_lr_scale up from 0.1 -> 0.2 when warm-starting: encoder
+#     weights are pre-tuned so we don't need to hobble the LR. When training
+#     from scratch (warm_start_from: null), consider dropping back to 0.1.
+#   - epochs 300 -> 250 when warm-starting (encoder already converged) or
+#     keep at 300 when from scratch.
+epochs: 300
+batch_size: 32
+lr: 3e-4
+encoder_lr_scale: 0.2                # 0.1 -> 0.2 (see note above)
+weight_decay: 0.01
+grad_clip: 1.0
+warmup_epochs: 25                    # 15 -> 25 (spiking encoder settling)
+use_amp: true
+
+# ── Gumbel temperature ─────────────────────────────────────────────────
+tau_start: 1.0
+tau_end: 0.1
+tau_decay: 0.95
+
+# ── A4 (Batch 1): Segmentation augmentation ────────────────────────────
+aug_rotate_z: true
+aug_rotate_so3: false
+aug_so3_tilt: 0.26
+
+aug_scale_lo: 0.66
+aug_scale_hi: 1.5
+
+aug_translate: 0.1
+
+aug_jitter_sigma: 0.005
+aug_jitter_clip: 0.02
+
+aug_flip_x: true
+aug_flip_y: true
+aug_flip_z: false
+
+# ── Logging ────────────────────────────────────────────────────────────
+eval_interval: 5
+log_dir: logs
+ckpt_dir: checkpoints
+seed: 42
+num_workers: 8

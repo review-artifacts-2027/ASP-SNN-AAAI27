@@ -1,0 +1,111 @@
+# configs/s3dis_seg.yaml — S3DIS scene segmentation
+# Protocol: train on Areas 1,2,3,4,6 — test on Area 5
+# Optimised for NVIDIA H100 80GB
+
+# ── Dataset (A3: larger blocks, more points for indoor context) ────────
+dataset: s3dis
+data_dir: data/s3dis
+num_points: 8192           # was 4096
+num_classes: 13
+use_category: false
+test_area: 5
+block_size: 2.0            # was 1.0
+use_rgb: true
+use_height: true
+input_channels: 7          # xyz(3) + rgb(3) + height(1)
+
+# ── Slicing ────────────────────────────────────────────────────────────
+num_slices: 16
+points_per_slice: 512      # was 256 — scale K with num_points
+geo_dim: 8
+
+# ── Model ──────────────────────────────────────────────────────────────
+feat_dim: 512
+k_edge: 20
+transformer_heads: 4
+transformer_ffn_dim: 1024
+hidden_dim: 512
+num_lif_layers: 3
+lif_leak: 0.9
+lif_threshold: 1.0
+lif_learnable: true        # DIET-SNN learnable leak + threshold
+lif_use_mpbn: true         # Membrane Potential BN (Guo et al. ICCV 2023)
+d_ssp: 128
+T: 6
+point_feat_dim: 64
+
+# ── Training (H100-tuned) ──────────────────────────────────────────────
+epochs: 100
+batch_size: 32             # was 64 — halved due to 2x points + 2x block
+lr: 0.0015                 # sqrt(0.5) rescale from prev 0.002
+weight_decay: 0.01
+grad_clip: 1.0
+warmup_epochs: 5
+use_amp: true
+use_class_weights: true
+
+# ── Loss (A4: TET replaces active_loss_seg with conf penalty) ──────────
+loss_mode: tet             # 'tet' or 'aux' (legacy)
+tet_lambda: 0.05           # MSE regularization toward final-step logits
+
+# ── Gumbel temperature ─────────────────────────────────────────────────
+tau_start: 1.0
+tau_end: 0.1
+tau_decay: 0.95
+
+# ── Augmentation (S3DIS-specific with RGB) ─────────────────────────────
+aug_rotate_z: true
+aug_scale_lo: 0.9
+aug_scale_hi: 1.1
+aug_translate: 0.1
+aug_jitter_sigma: 0.005
+aug_jitter_clip: 0.02
+aug_color_drop: 0.2
+aug_color_jitter: 0.05
+aug_elastic: false
+
+# Simplified PointWOLF Augmentation (existing)
+aug_pointwolf: true
+aug_pointwolf_num_anchors: 4
+aug_pointwolf_radius: 0.4
+aug_pointwolf_scale_lo: 0.75
+aug_pointwolf_scale_hi: 1.25
+
+# PointCutMix Augmentation (existing)
+aug_cutmix: true
+aug_cutmix_prob: 0.5
+
+# ── Neuromorphic augmentation ──────────────────────────────────────────
+spike_dropout: 0.1
+
+# ── Knowledge Distillation (KD) ────────────────────────────────────────
+kd_teacher_epochs: 30      # Set to 0 to disable teacher pre-training
+kd_temp: 4.0
+kd_lam: 0.5
+
+# ── Test-time augmentation (A2) ────────────────────────────────────────
+# Used by eval_s3dis.py --n_votes flag (default 3)
+n_votes: 3
+
+# ── Logging ────────────────────────────────────────────────────────────
+eval_interval: 5
+log_dir: logs
+ckpt_dir: checkpoints
+seed: 42
+num_workers: 8
+# ── B1: Lovász-Softmax loss ────────────────────────────────────────────
+# Directly optimizes mIoU (the eval metric). Combined with CE + class
+# weights, complements them by targeting the IoU surrogate on rare classes.
+# Reference: Berman et al. CVPR 2018.
+use_lovasz: true
+lovasz_lambda: 1.0         # standard weighting in LiDAR seg literature
+
+# ── E1: Room-level ASP prior ───────────────────────────────────────────
+# Precomputed once per room (at dataset init) via FPS + KNN + handcrafted
+# statistics. Injected into the initial LIF belief state u_0 through a
+# zero-initialized learnable projection. Preserves the ASP thesis: the
+# LIF membrane state acts as compressed belief; we simply seed that
+# belief with a room-level prior instead of zeros.
+use_room_prior: true
+room_prior_anchors: 64     # FPS anchors over the whole room
+room_prior_k: 32           # KNN per anchor

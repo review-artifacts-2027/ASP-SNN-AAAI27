@@ -1,0 +1,13 @@
+# A5b — M=16 selection ablation (real-data Table S4). Consumed by
+# experiments/run_policy_order.py. The sweep is implicit in the runner:
+#   END-TO-END backbones : learned (ssp) · random · fps_order (fixed)
+#   HELD-REP on learned  : oracle-greedy · swap_random · swap_fps
+#
+# anytime_ks : the accuracy@k budgets reported (confound-free primary result).
+#              Small k (1–4) is where READING ORDER matters most.
+# eval_thetas: LOW thresholds so the margin-exit tau-bar is forced BELOW M=16.
+#              Pick the headline theta from the run as the largest theta whose
+#              learned tau-bar is comfortably < M (target tau-bar ≈ 6–8 of 16).
+experiment: A5b_policy_M16
+anytime_ks:  [1, 2, 3, 4, 6, 8, 12, 16]
+eval_thetas: [0.20, 0.30, 0.40, 0.50]

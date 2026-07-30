@@ -1,0 +1,8 @@
+numpy>=1.24
+h5py>=3.8
+tqdm>=4.65
+pyyaml>=6.0
+scipy>=1.10
+scikit-learn>=1.2
+huggingface_hub>=0.20
+gdown>=5.0

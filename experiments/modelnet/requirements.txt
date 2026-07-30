@@ -1,0 +1,5 @@
+torch>=2.0
+numpy
+pyyaml
+matplotlib        # plots (optional at runtime)
+scipy             # exact stats at full scale (fallbacks included)
