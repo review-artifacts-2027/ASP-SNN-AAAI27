@@ -7,16 +7,21 @@ Protocol: train on Areas 1,2,3,4,6 — test on Area 5.
 Each room is stored as an .npy file with columns:
     [x, y, z, r, g, b, semantic_label]  (RGB in 0-255)
 
-Training: random 1m x 1m blocks, N=4096 points per block.
-Testing:  sliding-window blocks over full rooms, aggregate predictions.
+Returns per sample (train mode, 7 items with E1 enabled):
+    slices        [M, K, C]
+    geo           [M, 8]
+    pts_features  [N, F]
+    sid_arr       [N]
+    sem_labels    [N]
+    cat_id        0
+    room_summary  [D_room]     precomputed room-level prior (E1)
 
-Returns per sample:
-    slices        [M, K, C]    C = in_channels from config
-    geo           [M, 8]       geometry descriptors
-    pts_features  [N, F]       per-point features for PerPointBranch
-    sid_arr       [N]          slice assignment
-    sem_labels    [N]          semantic labels (0-12)
-    cat_id        0            dummy (no category conditioning)
+Returns per sample (eval mode when _return_meta=True, 9 items):
+    ... same 7 items ...
+    room_idx      int
+    orig_indices  [N]
+
+If cfg.use_room_prior is False, room_summary is omitted (6 / 8 items).
 """
 
 import os
@@ -26,27 +31,21 @@ from torch.utils.data import Dataset
 
 from .slicing import slice_point_cloud, assign_points_to_slices, compute_geo
 from .transforms import augment_seg
+from models.room_encoder import compute_room_summary_np, summary_dim
 
 
-# 13 semantic classes
 CLASS_NAMES = [
     'ceiling', 'floor', 'wall', 'beam', 'column', 'window',
     'door', 'table', 'chair', 'sofa', 'bookcase', 'board', 'clutter',
 ]
 NUM_CLASSES = 13
 
-# Areas for train/test split
 TRAIN_AREAS = [1, 2, 3, 4, 6]
 TEST_AREA = 5
 
 
 class S3DISDataset(Dataset):
-    """
-    S3DIS dataset with block-based sampling.
-
-    During training: randomly sample blocks from rooms.
-    During testing:  iterate over all blocks in test area rooms.
-    """
+    """S3DIS dataset with block-based sampling + optional room-level prior."""
 
     def __init__(self, data_dir: str, split: str, cfg=None):
         assert split in ('train', 'test')
@@ -57,16 +56,19 @@ class S3DISDataset(Dataset):
         self.use_rgb = getattr(cfg, 'use_rgb', True)
         self.use_height = getattr(cfg, 'use_height', True)
 
+        # E1: room-level prior config
+        self.use_room_prior = getattr(cfg, 'use_room_prior', False)
+        self.room_prior_anchors = getattr(cfg, 'room_prior_anchors', 64)
+        self.room_prior_k = getattr(cfg, 'room_prior_k', 32)
+
+        self._return_meta = False
+
         test_area = getattr(cfg, 'test_area', 5)
         if split == 'train':
             areas = [a for a in [1, 2, 3, 4, 5, 6] if a != test_area]
         else:
             areas = [test_area]
 
-        # Load all room files — support BOTH layouts:
-        #   Folder layout:  data_dir/Area_N/room_name.npy
-        #   Flat layout:    data_dir/raw/Area_N_room_name.npy  (OpenPoints)
-        #   Flat layout:    data_dir/Area_N_room_name.npy      (alternate)
         self.rooms = []
         npy_paths = self._discover_rooms(data_dir, areas)
 
@@ -80,48 +82,134 @@ class S3DISDataset(Dataset):
             )
 
         for npy_path in npy_paths:
-            room_data = np.load(npy_path)  # [N, 7]: x,y,z,r,g,b,label
+            room_data = np.load(npy_path)
             self.rooms.append(room_data.astype(np.float32))
 
-        # P0 FIX: Pre-compute per-ROOM z bounds for room-relative height
-        # normalization. Previously height was per-BLOCK which made floor=0
-        # and ceiling=1 meaningless within a small block.
-        # Now: height = (z - room_z_min) / (room_z_max - room_z_min) for the
-        # WHOLE room → floor of room = 0, ceiling of room = 1 (semantic).
+        # Per-room z bounds
         self.room_z_bounds = []
         for room in self.rooms:
             z = room[:, 2]
             z_min = float(z.min())
             z_max = float(z.max())
-            # Guard against degenerate rooms (single floor scan, etc.)
             if z_max - z_min < 1e-6:
                 z_max = z_min + 1.0
             self.room_z_bounds.append((z_min, z_max))
 
-        # For training: create a flat index of (room_idx, point_count)
-        # so we can sample uniformly across rooms proportional to size
+        # E1: precompute room summaries (once, cached to disk)
+        self.room_summaries = None
+        if self.use_room_prior:
+            self.room_summaries = self._compute_or_load_summaries(
+                data_dir, npy_paths, split, test_area,
+            )
+            print(f"[S3DIS] Room summaries: {self.room_summaries.shape} "
+                  f"(K_room={self.room_prior_anchors}, k={self.room_prior_k})")
+
         self.room_sizes = [len(r) for r in self.rooms]
         self.total_points = sum(self.room_sizes)
 
+        # ── Rare-class block oversampling (train split only) ───────────
+        # Under uniform-random block sampling, spatially small classes
+        # (e.g. beam, column: < 0.5% of points combined in S3DIS) rarely
+        # appear in a training crop at all, regardless of loss weighting.
+        # We precompute point-level anchors for each configured rare
+        # class and, with probability `rare_oversample_prob`, center the
+        # block on one of them instead. Anchors are kept PER CLASS (not
+        # pooled) and the class is sampled uniformly before the anchor,
+        # so classes with very different point counts (e.g. beam vs.
+        # column) are represented equally rather than in proportion to
+        # how much data each one has.
+        self.rare_classes = list(getattr(cfg, 'rare_classes', []))
+        self.rare_oversample_prob = float(
+            getattr(cfg, 'rare_oversample_prob', 0.0)
+        )
+        self.rare_anchors_by_class = {}
+        if split == 'train' and self.rare_classes and \
+           self.rare_oversample_prob > 0:
+            rng = np.random.RandomState(0)
+            buckets = {c: [] for c in self.rare_classes}
+            for ri, room in enumerate(self.rooms):
+                labels = room[:, 6].astype(int)
+                for c in self.rare_classes:
+                    idx = np.where(labels == c)[0]
+                    if len(idx) == 0:
+                        continue
+                    take = idx if len(idx) <= 500 else rng.choice(
+                        idx, 500, replace=False,
+                    )
+                    for pi in take:
+                        buckets[c].append(
+                            (ri, float(room[pi, 0]), float(room[pi, 1]))
+                        )
+            self.rare_anchors_by_class = {
+                c: v for c, v in buckets.items() if len(v) > 0
+            }
+            missing = [c for c in self.rare_classes
+                       if c not in self.rare_anchors_by_class]
+            if missing:
+                print(f"[S3DIS] Warning: rare classes {missing} have no "
+                      f"points in the training areas — oversampling has "
+                      f"no effect for these classes.")
+
         if split == 'train':
-            # Each "sample" is one random block — we define epoch length
-            # as total_points // n_points to see each point ~once per epoch
             epoch_len = getattr(cfg, 'epoch_len', -1)
             if epoch_len > 0:
                 self._len = epoch_len
             else:
                 self._len = self.total_points // self.n_points
         else:
-            # For testing: pre-compute all block centres for sliding window
             self.test_blocks = self._precompute_test_blocks()
             self._len = len(self.test_blocks)
 
         print(f"[S3DIS] '{split}': {len(self.rooms)} rooms, "
               f"{self.total_points:,} points, {self._len} samples/epoch")
 
+    def _compute_or_load_summaries(self, data_dir: str, npy_paths: list,
+                                   split: str, test_area: int) -> np.ndarray:
+        """Compute [num_rooms, D_room] summaries once, cache to disk."""
+        cache_name = (
+            f"s3dis_room_summaries_area{test_area}_{split}_"
+            f"K{self.room_prior_anchors}_k{self.room_prior_k}_"
+            f"rgb{int(self.use_rgb)}_h{int(self.use_height)}.npy"
+        )
+        cache_path = os.path.join(data_dir, cache_name)
+
+        if os.path.exists(cache_path):
+            summaries = np.load(cache_path).astype(np.float32)
+            expected_D = summary_dim(self.use_rgb, self.use_height) * \
+                         self.room_prior_anchors * 2 // (2 * self.room_prior_anchors) * self.room_prior_anchors
+            # Sanity check on cached dim
+            if summaries.shape == (len(self.rooms),
+                                   summary_dim(self.use_rgb, self.use_height)):
+                print(f"[S3DIS] Loaded cached room summaries → {cache_path}")
+                return summaries
+            print(f"[S3DIS] Cache dim mismatch, recomputing summaries.")
+
+        print(f"[S3DIS] Precomputing room summaries "
+              f"({len(self.rooms)} rooms, one-time cost)...")
+        summaries = []
+        for ri, room in enumerate(self.rooms):
+            s = compute_room_summary_np(
+                room,
+                n_anchors=self.room_prior_anchors,
+                k_neighbors=self.room_prior_k,
+                use_rgb=self.use_rgb,
+                use_height=self.use_height,
+                room_z_bounds=self.room_z_bounds[ri],
+                seed=ri,   # per-room seed for determinism
+            )
+            summaries.append(s)
+        summaries = np.stack(summaries).astype(np.float32)
+
+        try:
+            np.save(cache_path, summaries)
+            print(f"[S3DIS] Cached room summaries → {cache_path}")
+        except Exception as e:
+            print(f"[S3DIS] Warning: could not cache summaries ({e})")
+
+        return summaries
+
     def _precompute_test_blocks(self):
-        """Pre-compute (room_idx, cx, cy) for sliding-window test blocks."""
-        stride = self.block_size * 0.5  # 50% overlap
+        stride = self.block_size * 0.5
         blocks = []
         for ri, room in enumerate(self.rooms):
             xyz = room[:, :3]
@@ -141,28 +229,13 @@ class S3DISDataset(Dataset):
 
     @staticmethod
     def _discover_rooms(data_dir: str, areas: list) -> list:
-        """
-        Find all room .npy files for the requested areas.
-        Supports two common layouts:
-
-            (1) Folder layout (our default):
-                data_dir/Area_N/room_name.npy
-
-            (2) Flat layout (OpenPoints preprocessed s3disfull.tar):
-                data_dir/raw/Area_N_room_name.npy
-                data_dir/Area_N_room_name.npy
-
-        Returns sorted list of full file paths.
-        """
         found = []
         for area in areas:
-            # (1) Folder layout
             area_dir = os.path.join(data_dir, f"Area_{area}")
             if os.path.isdir(area_dir):
                 found.extend(sorted(glob.glob(os.path.join(area_dir, "*.npy"))))
                 continue
 
-            # (2) Flat layout — look in raw/ subfolder first, then data_dir
             patterns = [
                 os.path.join(data_dir, "raw", f"Area_{area}_*.npy"),
                 os.path.join(data_dir, f"Area_{area}_*.npy"),
@@ -171,84 +244,58 @@ class S3DISDataset(Dataset):
                 files = sorted(glob.glob(pat))
                 if files:
                     found.extend(files)
-                    break  # only one layout per area
+                    break
 
         return found
 
     def _sample_block(self, room: np.ndarray,
-                      cx: float = None, cy: float = None):
-        """
-        Extract a block of points from a room.
-
-        Args:
-            room: [N, 7] full room data
-            cx, cy: block centre (None = random for training)
-
-        Returns:
-            block: [n_points, 7]
-        """
+                      cx: float = None, cy: float = None,
+                      return_indices: bool = False):
         xyz = room[:, :3]
         half = self.block_size / 2
 
         if cx is None:
-            # Random block centre (training)
             x_min, y_min = xyz[:, 0].min(), xyz[:, 1].min()
             x_max, y_max = xyz[:, 0].max(), xyz[:, 1].max()
             cx = np.random.uniform(x_min + half, max(x_min + half, x_max - half))
             cy = np.random.uniform(y_min + half, max(y_min + half, y_max - half))
 
-        # Select points within block
         mask = (
             (xyz[:, 0] >= cx - half) & (xyz[:, 0] < cx + half) &
             (xyz[:, 1] >= cy - half) & (xyz[:, 1] < cy + half)
         )
-        block_pts = room[mask]
+        orig_idx = np.where(mask)[0]
+        block_pts = room[orig_idx]
 
         if len(block_pts) == 0:
-            # Fallback: take nearest n_points to centre
             dists = np.linalg.norm(xyz[:, :2] - np.array([cx, cy]), axis=1)
-            idx = np.argsort(dists)[:self.n_points]
-            block_pts = room[idx]
+            orig_idx = np.argsort(dists)[:self.n_points]
+            block_pts = room[orig_idx]
 
-        # Sample to exact n_points
         if len(block_pts) >= self.n_points:
             choice = np.random.choice(len(block_pts), self.n_points,
                                       replace=False)
         else:
             choice = np.random.choice(len(block_pts), self.n_points,
                                       replace=True)
-        return block_pts[choice]
+
+        block_out = block_pts[choice]
+        if return_indices:
+            return block_out, orig_idx[choice]
+        return block_out
 
     def _prepare_features(self, block: np.ndarray, room_idx: int):
-        """
-        Prepare block data into sliceable point cloud and per-point features.
-
-        Args:
-            block:    [N, 7]  x,y,z,r,g,b,label
-            room_idx: index into self.room_z_bounds for per-room height normalization
-
-        Returns:
-            pts_for_slicing: [N, C]  for encoder (C matches in_channels)
-            pts_features:    [N, F]  for PerPointBranch
-            sem_labels:      [N]     int labels (0-12)
-        """
         xyz = block[:, :3].copy()
-        rgb = block[:, 3:6].copy() / 255.0  # normalise to [0,1]
+        rgb = block[:, 3:6].copy() / 255.0
         labels = block[:, 6].astype(np.int64)
 
-        # P0 FIX: Height feature is normalized PER-ROOM, not per-block.
-        # Computed BEFORE centering xyz since we need the absolute z values.
-        # Now floor of room = 0, ceiling of room = 1 (semantic meaning).
         z_min, z_max = self.room_z_bounds[room_idx]
         z_vals = block[:, 2]
         height = ((z_vals - z_min) / (z_max - z_min)).astype(np.float32)
-        height = np.clip(height, 0.0, 1.0)  # guard against outliers
+        height = np.clip(height, 0.0, 1.0)
 
-        # Centre xyz within the block (height feature stays room-relative)
         xyz = xyz - xyz.mean(axis=0)
 
-        # Build slicing input: xyz + rgb + (optional height)
-        # The encoder expects in_channels dimensions
         parts = [xyz]
         if self.use_rgb:
             parts.append(rgb)
@@ -256,19 +303,33 @@ class S3DISDataset(Dataset):
             parts.append(height.reshape(-1, 1))
         pts_for_slicing = np.concatenate(parts, axis=1).astype(np.float32)
 
-        # Per-point features for PerPointBranch (same channels)
         pts_features = pts_for_slicing.copy()
 
         return pts_for_slicing, pts_features, labels
 
     def __getitem__(self, idx):
         if self.split == 'train':
-            # Random room, random block
-            room_idx = np.random.randint(0, len(self.rooms))
-            block = self._sample_block(self.rooms[room_idx])
+            if self.rare_anchors_by_class and \
+               np.random.random() < self.rare_oversample_prob:
+                # Sample the rare CLASS uniformly first, then an anchor
+                # within it — see the balancing rationale in __init__.
+                rare_keys = list(self.rare_anchors_by_class.keys())
+                c = rare_keys[np.random.randint(0, len(rare_keys))]
+                anchors_c = self.rare_anchors_by_class[c]
+                room_idx, ax, ay = anchors_c[
+                    np.random.randint(0, len(anchors_c))
+                ]
+                jitter = self.block_size * 0.15
+                cx = ax + np.random.uniform(-jitter, jitter)
+                cy = ay + np.random.uniform(-jitter, jitter)
+                block = self._sample_block(self.rooms[room_idx], cx, cy)
+            else:
+                room_idx = np.random.randint(0, len(self.rooms))
+                block = self._sample_block(self.rooms[room_idx])
+            orig_indices = None
 
-            # PointCutMix (Batch/Sample-level Mixup)
-            if getattr(self.cfg, 'aug_cutmix', False) and np.random.random() < getattr(self.cfg, 'aug_cutmix_prob', 0.5):
+            if getattr(self.cfg, 'aug_cutmix', False) and \
+               np.random.random() < getattr(self.cfg, 'aug_cutmix_prob', 0.5):
                 room_idx2 = np.random.randint(0, len(self.rooms))
                 block2 = self._sample_block(self.rooms[room_idx2])
 
@@ -288,57 +349,62 @@ class S3DISDataset(Dataset):
 
                 num_replace = mask.sum()
                 if num_replace > 0:
-                    replace_idx = np.random.choice(len(block2), num_replace, replace=True)
+                    replace_idx = np.random.choice(len(block2), num_replace,
+                                                   replace=True)
                     block[mask] = block2[replace_idx]
         else:
-            # Deterministic test block
             room_idx, cx, cy = self.test_blocks[idx]
-            block = self._sample_block(self.rooms[room_idx], cx, cy)
+            block, orig_indices = self._sample_block(
+                self.rooms[room_idx], cx, cy, return_indices=True,
+            )
 
-        # Pass room_idx so height is normalized per-ROOM (not per-block)
         pts_for_slicing, pts_features, sem_labels = self._prepare_features(
             block, room_idx
         )
 
-        # Slice
         M = getattr(self.cfg, 'num_slices', 16)
         K = getattr(self.cfg, 'points_per_slice', 256)
         fps_seed = idx if self.split == 'test' else None
-        slices, geo, anchor_xyz = slice_point_cloud(pts_for_slicing, M, K, seed=fps_seed)
+        slices, geo, anchor_xyz = slice_point_cloud(pts_for_slicing, M, K,
+                                                   seed=fps_seed)
 
-        # Assign points to slices (using xyz only)
         sid_arr = assign_points_to_slices(
             pts_for_slicing[:, :3], anchor_xyz
         )
 
-        # Augment (training only)
         if self.split == 'train' and self.cfg is not None:
             slices, pts_features = augment_seg(slices, pts_features, self.cfg)
-            # P0 FIX: Recompute geo from augmented slices so positional encoding
-            # and SSP see the same geometry as the encoder.
             geo = np.stack([compute_geo(s) for s in slices])
 
-        return (
-            slices.astype(np.float32),          # [M, K, C]
-            geo.astype(np.float32),             # [M, 8]
-            pts_features.astype(np.float32),    # [N, F]
-            sid_arr.astype(np.int64),           # [N]
-            sem_labels,                         # [N]
-            0,                                  # dummy cat_id
+        base = (
+            slices.astype(np.float32),
+            geo.astype(np.float32),
+            pts_features.astype(np.float32),
+            sid_arr.astype(np.int64),
+            sem_labels,
+            0,
         )
+
+        # E1: append precomputed room summary
+        if self.use_room_prior:
+            base = base + (self.room_summaries[room_idx].copy(),)
+
+        if self._return_meta:
+            if orig_indices is None:
+                orig_indices = np.zeros(self.n_points, dtype=np.int64)
+            base = base + (
+                np.int64(room_idx),
+                orig_indices.astype(np.int64),
+            )
+
+        return base
 
 
 def compute_class_weights(data_dir: str, test_area: int = 5) -> np.ndarray:
-    """
-    Compute inverse-frequency class weights from training areas.
-    Supports both folder and flat S3DIS layouts.
-    Results are cached to data_dir/s3dis_class_weights.npy to avoid
-    recomputing on every training start.
-
-    Returns:
-        weights: [13] float32 normalised so max = 1.0
-    """
-    cache_path = os.path.join(data_dir, f"s3dis_class_weights_area{test_area}.npy")
+    """Compute inverse-frequency class weights from training areas."""
+    cache_path = os.path.join(
+        data_dir, f"s3dis_class_weights_area{test_area}.npy"
+    )
     if os.path.exists(cache_path):
         return np.load(cache_path).astype(np.float32)
 
@@ -352,13 +418,11 @@ def compute_class_weights(data_dir: str, test_area: int = 5) -> np.ndarray:
         for c in range(NUM_CLASSES):
             counts[c] += (labels == c).sum()
 
-    # Inverse frequency, normalised
     total = counts.sum()
     freq = counts / total
     weights = 1.0 / (freq + 1e-8)
-    weights = weights / weights.max()  # normalise so max weight = 1.0
+    weights = weights / weights.max()
     weights = weights.astype(np.float32)
-    # Cache for subsequent runs
     try:
         np.save(cache_path, weights)
     except Exception:

@@ -19,6 +19,7 @@ Architecture:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from .room_encoder import RoomPriorProjection, summary_dim
 
 from .encoder import EdgeConvFeatureExtractor
 from .ssp import SSP
@@ -154,6 +155,25 @@ class ASPSegmentor(nn.Module):
             spike_dropout=getattr(cfg, 'spike_dropout', 0.0),
             lif_learnable=getattr(cfg, 'lif_learnable', True),  # default True = learnable LIF
         )
+        # ── E1: Room-level ASP prior ─────────────────────────────────
+        self.use_room_prior = getattr(cfg, 'use_room_prior', False)
+        if self.use_room_prior:
+            D_room = summary_dim(
+                use_rgb=getattr(cfg, 'use_rgb', True),
+                use_height=getattr(cfg, 'use_height', True),
+            ) * getattr(cfg, 'room_prior_anchors', 64)
+            # Note: pooled summary is mean+max over anchors, so effective
+            # dim is 2 * per_anchor. summary_dim() already returns 2 * per_anchor.
+            D_room = summary_dim(
+                use_rgb=getattr(cfg, 'use_rgb', True),
+                use_height=getattr(cfg, 'use_height', True),
+            )
+            self.room_prior_proj = RoomPriorProjection(
+                room_summary_dim=D_room,
+                hidden_dim=cfg.hidden_dim,
+            )
+        else:
+            self.room_prior_proj = None
 
         self.register_buffer('gumbel_tau',
                              torch.tensor(float(cfg.tau_start)))
@@ -183,25 +203,31 @@ class ASPSegmentor(nn.Module):
         return [0.1 + 0.9 * (t / (T - 1)) ** 2 for t in range(T)]
 
     def forward(self, slices, geo, sid_arr, cat_ids, pts_features,
-                training=True):
+                room_summary=None, fine_slices=None, fine_geo=None,
+                fine_sid_arr=None, training=True):
         """
         Args:
-            slices:       [B, M, K, C]  per-slice point clouds
-            geo:          [B, M, 8]     geometry descriptors
-            sid_arr:      [B, N]        slice-id per point (int)
-            cat_ids:      [B]           category index (ShapeNet) or None
-            pts_features: [B, N, F]     per-point features for PerPointBranch
-                          ShapeNet: [B, N, 3] (xyz)
-                          S3DIS:    [B, N, 7] (xyz + rgb + height)
+            slices:       [B, M, K, C]
+            geo:          [B, M, 8]
+            sid_arr:      [B, N]
+            cat_ids:      [B]
+            pts_features: [B, N, F]
+            room_summary: [B, D_room] or None
+                          E1: precomputed room-level prior. When provided
+                          AND self.use_room_prior=True, seeds the initial
+                          LIF belief state via a zero-init learnable
+                          projection. When None or use_room_prior=False,
+                          behavior is identical to the pre-E1 baseline.
             training:     bool
 
         Returns:
             part_logits:  [B, N, num_classes]
-            belief_list:  list of [B, hidden_dim] per timestep
+            aux:          dict with belief_list, per_timestep_logits, bnd_logits
         """
         B, M, K, _ = slices.shape
         N      = sid_arr.shape[1]
         device = slices.device
+        
 
         # Defensive: verify pts_features channel dim matches PerPointBranch
         pp_in_dim = self.point_branch.mlp[0].in_channels
@@ -240,6 +266,10 @@ class ASPSegmentor(nn.Module):
 
         # ASP loop — compute intermediate logits for active loss
         states      = self.lif_head.init_state(B, device)
+        if self.room_prior_proj is not None and room_summary is not None:
+            u_init = self.room_prior_proj(room_summary)        # [B, hidden_dim]
+            u0, s0 = states[0]
+            states[0] = (u0 + u_init, s0)
         belief      = torch.zeros(B, self.cfg.hidden_dim, device=device)
         vis_mask    = torch.zeros(B, M, dtype=torch.bool, device=device)
         belief_list = []
@@ -263,7 +293,14 @@ class ASPSegmentor(nn.Module):
             e_t = e_t + self.belief_to_feat(states[-1][0].detach())
 
             _, states, u_last = self.lif_head.step(e_t, states)
-            belief = self.belief_norm(u_last.detach())
+            # Kept differentiable w.r.t. this timestep's forward pass: the
+            # segmentation loss at this and all later timesteps flows back
+            # through `belief` into the slice-selection policy (SSP) and the
+            # LIF cell. Truncated BPTT across *timesteps* is handled above,
+            # at `states[-1][0].detach()` — that is the only place gradient
+            # should be cut; detaching here as well would silently prevent
+            # SSP/LIF from ever receiving a training signal from the task.
+            belief = self.belief_norm(u_last)
             belief_list.append(belief)
             
             # Compute intermediate segmentation logits for this step

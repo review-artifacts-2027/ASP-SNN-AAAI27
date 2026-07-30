@@ -198,6 +198,7 @@ class MultiLayerLIF(nn.Module):
                  cls_head_dropout: list = None):
         self._spike_sum   = 0.0
         self._spike_total = 0
+        self._rate_terms  = []   # differentiable per-step firing rates
         super().__init__()
         self.num_layers   = num_layers
         self.hidden_dim   = hidden_dim
@@ -263,6 +264,7 @@ class MultiLayerLIF(nn.Module):
             # Track firing rate for energy efficiency reporting
             self._spike_sum   += s_new.sum().item()
             self._spike_total += s_new.numel()
+            self._rate_terms.append(s_new.mean())  # retains grad_fn
 
             if self.spike_monitor is not None:
                 self.spike_monitor.record(i, s_new)
@@ -277,15 +279,26 @@ class MultiLayerLIF(nn.Module):
         return logits, new_states, u_last
 
     def mean_firing_rate(self) -> float:
-        """
-        Returns mean spike firing rate accumulated since last reset.
-        Called by train_s3dis.py to compute the sparsity regularisation loss.
-        """
+        """Mean spike firing rate since last reset. Plain float — for
+        logging only, NOT for use in a loss (no gradient)."""
         if self._spike_total == 0:
             return 0.0
         return self._spike_sum / self._spike_total
+
+    def firing_rate_loss_term(self) -> torch.Tensor:
+        """Differentiable mean firing rate for the sparsity-regularisation
+        term in the training loss. `mean_firing_rate()` above returns a
+        plain Python float (built via `.item()`) and carries no gradient;
+        this method returns the equivalent quantity as a tensor that keeps
+        its computation graph, so the sparsity penalty actually trains the
+        spiking layers instead of just being logged.
+        """
+        if not self._rate_terms:
+            return torch.zeros((), device=next(self.parameters()).device)
+        return torch.stack(self._rate_terms).mean()
 
     def reset_spike_stats(self):
         """Reset counters at the start of each epoch."""
         self._spike_sum   = 0.0
         self._spike_total = 0
+        self._rate_terms  = []

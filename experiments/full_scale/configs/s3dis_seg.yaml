@@ -1,23 +1,22 @@
 # configs/s3dis_seg.yaml — S3DIS scene segmentation
 # Protocol: train on Areas 1,2,3,4,6 — test on Area 5
-# Target: 55-62% mIoU
 # Optimised for NVIDIA H100 80GB
 
-# ── Dataset ────────────────────────────────────────────────────────────
+# ── Dataset (A3: larger blocks, more points for indoor context) ────────
 dataset: s3dis
 data_dir: data/s3dis
-num_points: 4096
+num_points: 4096          # scaled down from 8192 for memory-constrained GPUs (see grad_accum_steps below)
 num_classes: 13
 use_category: false
 test_area: 5
-block_size: 1.0
+block_size: 2.0            # was 1.0
 use_rgb: true
 use_height: true
-input_channels: 7        # xyz(3) + rgb(3) + height(1)
+input_channels: 7          # xyz(3) + rgb(3) + height(1)
 
 # ── Slicing ────────────────────────────────────────────────────────────
 num_slices: 16
-points_per_slice: 256
+points_per_slice: 256     # scaled with num_points
 geo_dim: 8
 
 # ── Model ──────────────────────────────────────────────────────────────
@@ -29,22 +28,28 @@ hidden_dim: 512
 num_lif_layers: 3
 lif_leak: 0.9
 lif_threshold: 1.0
+lif_learnable: true        # DIET-SNN learnable leak + threshold
+lif_use_mpbn: true         # Membrane Potential BN (Guo et al. ICCV 2023)
 d_ssp: 128
-T: 6
+T: 10                      # D1: visits 10/16 slices (was 6)
 point_feat_dim: 64
 
-# ── Training (H100-tuned: larger batch, fewer epochs) ──────────────────
-epochs: 100              # 100 is sufficient for S3DIS (most papers use 100-300)
-batch_size: 64           # H100 80GB can easily handle 64; was 16 = 4x increase
-lr: 0.002                # Scaled with sqrt(4) for stability vs original lr=1e-3
+# ── Training (H100-tuned) ──────────────────────────────────────────────
+epochs: 150
+batch_size: 4              # small due to memory; see grad_accum_steps for effective batch
+lr: 0.0008
 weight_decay: 0.01
 grad_clip: 1.0
 warmup_epochs: 5
 use_amp: true
 use_class_weights: true
 
+# ── Loss (A4: TET replaces active_loss_seg with conf penalty) ──────────
+loss_mode: tet             # 'tet' or 'aux' (legacy)
+tet_lambda: 0.01
+
 # ── Gumbel temperature ─────────────────────────────────────────────────
-tau_start: 1.0
+tau_start: 0.5             # tau_decay left at its default below for annealing
 tau_end: 0.1
 tau_decay: 0.95
 
@@ -59,9 +64,77 @@ aug_color_drop: 0.2
 aug_color_jitter: 0.05
 aug_elastic: false
 
+# Simplified PointWOLF Augmentation (existing)
+aug_pointwolf: true
+aug_pointwolf_num_anchors: 4
+aug_pointwolf_radius: 0.4
+aug_pointwolf_scale_lo: 0.75
+aug_pointwolf_scale_hi: 1.25
+
+# PointCutMix Augmentation (existing)
+aug_cutmix: true
+aug_cutmix_prob: 0.5
+
+# ── Neuromorphic augmentation ──────────────────────────────────────────
+spike_dropout: 0.1
+
+# ── Knowledge Distillation (KD) ────────────────────────────────────────
+kd_teacher_epochs: 30      # Set to 0 to disable teacher pre-training
+kd_temp: 4.0
+kd_lam: 0.5
+
+# ── Test-time augmentation (A2) ────────────────────────────────────────
+# Used by eval_s3dis.py --n_votes flag (default 3)
+n_votes: 3
+
 # ── Logging ────────────────────────────────────────────────────────────
 eval_interval: 5
 log_dir: logs
 ckpt_dir: checkpoints
 seed: 42
-num_workers: 8           # H100 cluster typically has 32+ CPUs
+num_workers: 8
+# ── B1: Lovász-Softmax loss ────────────────────────────────────────────
+# Directly optimizes mIoU (the eval metric). Combined with CE + class
+# weights, complements them by targeting the IoU surrogate on rare classes.
+# Reference: Berman et al. CVPR 2018.
+use_lovasz: true
+lovasz_lambda: 0.3
+
+# ── E1: Room-level ASP prior ───────────────────────────────────────────
+# Precomputed once per room (at dataset init) via FPS + KNN + handcrafted
+# statistics. Injected into the initial LIF belief state u_0 through a
+# zero-initialized learnable projection. Preserves the ASP thesis: the
+# LIF membrane state acts as compressed belief; we simply seed that
+# belief with a room-level prior instead of zeros.
+use_room_prior: true
+room_prior_anchors: 64     # FPS anchors over the whole room
+room_prior_k: 32           # KNN per anchor
+# ── Gradient accumulation ───────────────────────────────────────────────
+# Effective batch size = batch_size * grad_accum_steps = 4 * 8 = 32.
+grad_accum_steps: 8
+
+# ── Rare-class block oversampling ───────────────────────────────────────
+# Biases training-block sampling toward point-level anchors of the listed
+# class IDs, balanced per class (see datasets/s3dis.py). Targets classes
+# that are spatially small enough to be absent from most uniform-random
+# crops (beam=3, column=4 in the standard 13-class S3DIS taxonomy).
+rare_classes: [3, 4]
+rare_oversample_prob: 0.35
+
+# ── Annealed class-weight / Lovász schedule ─────────────────────────────
+# Ramps class weights and lovasz_lambda down from full strength to a
+# floor (not zero) over cw_anneal_epochs, starting at cw_anneal_start_epoch.
+# Classes listed in rare_classes are exempt and keep full weight throughout.
+cw_anneal_start_epoch: 50
+cw_anneal_epochs: 20
+cw_floor_scale: 0.35
+lovasz_floor_scale: 0.35
+
+# ── C1: Teacher architecture for knowledge distillation ────────────────
+# 'pointnet': per-point MLP + global max-pool.
+# 'dgcnn' (used for the reported result): dynamic EdgeConv
+# (k=teacher_dgcnn_k), adds local graph features at the cost of a full
+# teacher pretraining pass (kd_teacher_epochs epochs) scaling roughly
+# with O(N^2) per layer instead of O(N).
+teacher_arch: dgcnn
+teacher_dgcnn_k: 16
