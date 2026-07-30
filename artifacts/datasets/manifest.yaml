@@ -1,0 +1,19 @@
+schema_version: 1
+payloads_included: false
+reason: no_dataset_payload_or_redistribution_grant_in_approved_sources
+datasets:
+  - id: modelnet10
+    task: point_cloud_classification
+    setup_document: experiments/modelnet/README.md
+  - id: modelnet40
+    task: point_cloud_classification
+    setup_document: experiments/modelnet/README.md
+  - id: shapenetpart
+    task: point_cloud_part_segmentation
+    setup_document: experiments/shapenetpart/README.md
+  - id: s3dis
+    task: indoor_semantic_segmentation
+    setup_document: experiments/s3dis/README.md
+  - id: imagenet100_foveated
+    task: image_classification
+    setup_document: experiments/foveated_imagenet100/README.md

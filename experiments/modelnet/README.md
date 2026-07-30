@@ -70,3 +70,20 @@ all intended seeds have completed.
 
 See `../../docs/PAPER_CODE_CROSSCHECK.md` before treating a default
 configuration as an exact reproduction of manuscript results.
+
+## Bundled source diagnostics
+
+The available seed-0 diagnostic outputs are stored outside this experiment
+folder:
+
+- Results: `../../artifacts/source_diagnostics/results/`
+- Weights: `../../artifacts/source_diagnostics/weights/`
+- Exact diagnostic base configs:
+  `../../artifacts/source_diagnostics/configs/`
+
+These are 30-epoch diagnostic runs and are not manuscript checkpoints. Validate
+all 50 state dictionaries against this implementation from the repository root:
+
+```bash
+python tools/validate_diagnostic_weights.py
+```

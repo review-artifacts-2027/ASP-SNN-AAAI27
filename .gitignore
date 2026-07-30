@@ -28,6 +28,10 @@ __pycache__/
 .mypy_cache/
 .coverage
 
+# The only committed checkpoints are the curated, validated ModelNet source
+# diagnostics documented under artifacts/source_diagnostics/.
+!/artifacts/source_diagnostics/weights/**/*.pt
+
 # Local environment configuration and editor metadata.
 .env
 .venv/

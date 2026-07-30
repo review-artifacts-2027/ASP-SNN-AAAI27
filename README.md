@@ -1,9 +1,10 @@
 # ASP-SNN: Anonymous Reproducibility Archive
 
 This repository is an anonymous code archive for the experiments evaluated in
-the accompanying submission.  It contains source code and configuration files
-only: datasets, trained weights, generated logs, and manuscript files are not
-included.
+the accompanying submission. It contains source code, configuration files, a
+dataset manifest, and the ModelNet diagnostic artifacts that were actually
+available in the approved source snapshots. Manuscript files and raw datasets
+are not included.
 
 ## Included experiment folders
 
@@ -16,6 +17,18 @@ included.
 
 Each experiment folder has a focused README that documents its data layout,
 configuration file, training command, and evaluation command.
+
+## Datasets, weights, and results
+
+The approved snapshots did not contain redistributable dataset payloads.
+`artifacts/datasets/` records the required layouts and directs reviewers to the
+corresponding experiment documentation.
+
+The only available in-scope weights and generated results are 50 seed-0
+ModelNet diagnostic checkpoints with their JSON/CSV outputs. They are preserved
+under `artifacts/source_diagnostics/`. These are short diagnostic runs, not the
+manuscript checkpoints or headline results. See the artifact README before
+using or citing them.
 
 ## Setup
 
@@ -36,10 +49,12 @@ pip install -r requirements.txt
 ## Recommended order
 
 1. Run the repository check: `python tools/validate_repository.py`.
-2. Read the README in the experiment folder of interest.
-3. Prepare that experiment's dataset in the layout described there.
-4. Train using its provided configuration.
-5. Evaluate with the corresponding evaluation entry point.
+2. Validate the bundled ModelNet weights:
+   `python tools/validate_diagnostic_weights.py`.
+3. Read the README in the experiment folder of interest.
+4. Prepare that experiment's dataset in the layout described there.
+5. Train using its provided configuration.
+6. Evaluate with the corresponding evaluation entry point.
 
 ## Scope and paper cross-check
 
