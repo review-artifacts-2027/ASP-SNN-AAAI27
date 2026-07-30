@@ -48,7 +48,7 @@ class S3DISDataset(Dataset):
                 f"Expected either:\n"
                 f"  - {data_dir}/Area_N/*.npy   (folder layout)\n"
                 f"  - {data_dir}/raw/Area_N_*.npy   (flat layout, OpenPoints)\n"
-                f"Run: python datasets/download.py --s3dis"
+                f"See README.md for the required S3DIS layout."
             )
 
         for npy_path in npy_paths:

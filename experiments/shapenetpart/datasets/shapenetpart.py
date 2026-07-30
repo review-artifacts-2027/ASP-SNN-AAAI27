@@ -71,7 +71,7 @@ class ShapeNetPartDataset(Dataset):
         if not h5_files:
             raise FileNotFoundError(
                 f"No {split}*.h5 files found in {data_dir}. "
-                f"Run: python datasets/download.py --shapenet"
+                f"See README.md for the required ShapeNetPart layout."
             )
 
         all_pts, all_cat, all_pid = [], [], []

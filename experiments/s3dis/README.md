@@ -49,7 +49,7 @@ settings:
 ```bash
 python eval_s3dis.py \
   --config configs/s3dis_seg.yaml \
-  --checkpoint checkpoints/s3dis_best.pt
+  --ckpt checkpoints/s3dis_best.pt
 ```
 
 `scripts/run_s3dis.sh` is a SLURM wrapper for the training command.  Generated

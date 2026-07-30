@@ -40,7 +40,7 @@ The program writes checkpoints and CSV logs to the configured `ckpt_dir` and
 ```bash
 python eval_shapenet.py \
   --config configs/shapenet_seg.yaml \
-  --checkpoint checkpoints/shapenet_best.pt
+  --ckpt checkpoints/shapenet_best.pt
 ```
 
 For a cluster environment, `scripts/run_shapenet.sh` wraps the same command in

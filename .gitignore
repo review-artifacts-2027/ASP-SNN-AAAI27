@@ -8,9 +8,17 @@ AAAI/
 /runs/
 /results/
 /wandb/
+/experiments/*/data/
+/experiments/*/checkpoints/
+/experiments/*/logs/
+/experiments/*/outputs/
+/experiments/*/runs/
+/experiments/*/results/
+/experiments/*/wandb/
 __pycache__/
 *.py[cod]
 *.so
+*.log
 *.pt
 *.pth
 *.ckpt
