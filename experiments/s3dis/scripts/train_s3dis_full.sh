@@ -1,5 +1,4 @@
 #!/bin/bash
-# scripts/train_s3dis_full.sh — Full S3DIS training (100 epochs, batch=64 on H100).
 
 set -e
 mkdir -p logs checkpoints

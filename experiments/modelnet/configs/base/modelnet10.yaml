@@ -8,7 +8,7 @@ points_per_slice: 128
 d_model: 128
 enc_hidden: 64
 d_ssp: 64
-ssp_rank: 0            # set 8 for the ~2K-parameter budget variant (exact, Thm 5)
+ssp_rank: 0
 policy: ssp
 use_mask: true
 theta: 0.7

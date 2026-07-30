@@ -1,24 +1,18 @@
-# ModelNet40, M=16 selection ablation base.
-# IDENTICAL to configs/base/modelnet40.yaml (k_slices: 16 already == M=16),
-# with epochs/seeds set for the 2-day, 3-seed window. The ordering only needs
-# to STABILISE, not reach converged SOTA — 50–80 epochs is the target.
-# theta here is the TRAINING/base value; the ablation applies LOW eval thetas
-# post-hoc (see the exp config) to force tau-bar < M without retraining.
 dataset: modelnet40
 num_classes: 40
 modality: points
 data_root: ./data
 n_points: 1024
-k_slices: 16            # == M (number of slices the loop selects among)
+k_slices: 16
 points_per_slice: 128
 d_model: 128
 enc_hidden: 64
 d_ssp: 64
 ssp_rank: 0
-policy: ssp            # overridden per-backbone by the runner (ssp/random/fixed)
+policy: ssp
 use_mask: true
 theta: 0.7
-epochs: 60             # 50–80 recommended; override with --epochs
+epochs: 60
 lr: 1.0e-3
 batch_size: 128
 lambda_exit: 0.1

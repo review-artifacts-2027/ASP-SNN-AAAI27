@@ -1,29 +1,3 @@
-"""
-experiments/run_policy_order.py — the M=16 selection ablation on ModelNet40.
-
-Answers Supplementary D.3 / reviewer W1-W3 with real data. For each seed it:
-  1. trains three backbones END-TO-END: learned (ssp), random, fps_order (fixed);
-  2. on the LEARNED backbone, additionally evaluates the ORACLE-GREEDY ceiling
-     and the held-representation SWAPS (random/fps on the same frozen weights);
-  3. reports the accuracy@k anytime curve (confound-free) and tau_bar/acc@theta.
-
-Two comparisons come out of one run:
-  * END-TO-END   : learned vs random vs fps_order   (each on its own backbone)
-                   -> "does training a membrane-driven policy help?"
-  * HELD-REP     : learned vs swap_random vs swap_fps vs oracle (one backbone)
-                   -> "given ONE representation, does the READING ORDER matter,
-                       and how far is the learned order from the oracle?"
-
-Usage
------
-    python -m experiments.run_policy_order \
-        --base configs/base/modelnet40_M16_ablation.yaml \
-        --exp  configs/ablations/A5b_policy_M16.yaml \
-        --seeds 0 1 2 --epochs 60 --device cuda --out results
-
-Drop asp/oracle.py and asp/anytime.py into the package first. No other file
-needs editing.
-"""
 from __future__ import annotations
 
 import argparse, copy, csv, json, os, sys
@@ -34,12 +8,12 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from asp.datasets import build_dataset                    # noqa: E402
-from asp.eval import collect                              # noqa: E402
-from asp.model import ASPConfig, ASPModel                 # noqa: E402
-from asp.train import train_model                         # noqa: E402
-from asp import anytime as AT                             # noqa: E402
-from asp.oracle import collect_oracle, collect_with_policy  # noqa: E402
+from asp.datasets import build_dataset
+from asp.eval import collect
+from asp.model import ASPConfig, ASPModel
+from asp.train import train_model
+from asp import anytime as AT
+from asp.oracle import collect_oracle, collect_with_policy
 
 
 def make_loaders(cfg):
@@ -78,7 +52,6 @@ def main():
     out_dir = os.path.join(a.out, exp["experiment"], base["dataset"])
     os.makedirs(out_dir, exist_ok=True)
 
-    # rule -> list of per-seed summaries
     RULES = ["learned", "random", "fps_order", "oracle", "swap_random", "swap_fps"]
     bucket = {r: [] for r in RULES}
     flat_rows = []
@@ -88,16 +61,15 @@ def main():
         torch.manual_seed(seed)
         tr, te = make_loaders(base)
 
-        # --- END-TO-END backbones ---
         m_learned = train_one(base, "ssp",    tr, te, dev)
         m_random  = train_one(base, "random", tr, te, dev)
         m_fps     = train_one(base, "fixed",  tr, te, dev)
 
         raws = {
-            "learned":   collect(m_learned, te, dev),                 # own rule
+            "learned":   collect(m_learned, te, dev),
             "random":    collect(m_random,  te, dev),
             "fps_order": collect(m_fps,     te, dev),
-            # --- HELD-REP on the learned backbone ---
+
             "oracle":      collect_oracle(m_learned, te, dev),
             "swap_random": collect_with_policy(m_learned, te, dev, "random"),
             "swap_fps":    collect_with_policy(m_learned, te, dev, "fixed"),
@@ -117,7 +89,6 @@ def main():
         json.dump(raws and {r: {"seed": seed} for r in raws},
                   open(os.path.join(out_dir, f"seed{seed}_done.json"), "w"))
 
-    # ---------------- aggregate + write ----------------
     if flat_rows:
         keys = sorted({k for r in flat_rows for k in r})
         with open(os.path.join(out_dir, "rows.csv"), "w", newline="") as f:
@@ -127,7 +98,6 @@ def main():
         vals = [field_getter(s) for s in bucket[rule]]
         return np.mean(vals), np.std(vals)
 
-    # ---- Table S4 (real data) ----
     lines = []
     lines.append("=" * 110)
     lines.append(f"TABLE S4 (real data) — {base['dataset']}  M={base['k_slices']}  "
@@ -147,7 +117,7 @@ def main():
         mu, sd = agg(rule, lambda s: s["acc_full_K"] * 100)
         lines.append(rule.ljust(13) + "  " + "  ".join(cells) + f"  {mu:4.1f}±{sd:3.1f}")
     lines.append("-" * len(hdr))
-    # early-exit view
+
     lines.append("\nEarly-exit view (tau-bar | acc@theta), mean±std:")
     th_hdr = "rule".ljust(13) + "".join(f"  θ={t}: taū / acc".ljust(20) for t in thetas)
     lines.append(th_hdr)
@@ -160,7 +130,7 @@ def main():
             amu, asd = agg(rule, lambda s, i=i: s["theta_rows"][i]["acc_theta"] * 100)
             cells.append(f"{tmu:4.1f} / {amu:4.1f}".ljust(20))
         lines.append(rule.ljust(13) + "".join(cells))
-    # headline gaps at a small budget
+
     kk = ks[2] if len(ks) > 2 else ks[0]
     def m(rule): return agg(rule, lambda s: s["anytime"][kk] * 100)[0]
     lines.append("\n" + "=" * 110)
@@ -178,7 +148,6 @@ def main():
     print(report)
     open(os.path.join(out_dir, "table_s4.txt"), "w").write(report)
     print("\nwrote:", os.path.join(out_dir, "rows.csv"), "and table_s4.txt")
-
 
 if __name__ == "__main__":
     main()

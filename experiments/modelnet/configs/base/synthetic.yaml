@@ -1,4 +1,3 @@
-# CPU-runnable verification dataset (controlled ground truth). Not a benchmark.
 dataset: synthetic
 num_classes: 8
 modality: points

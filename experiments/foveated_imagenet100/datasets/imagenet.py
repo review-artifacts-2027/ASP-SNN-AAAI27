@@ -1,27 +1,8 @@
-"""
-imagenet.py
-===========
-ImageNet/ImageNet-100 dataloaders for the FoveaTer ASP runner.
-
-Expected layout:
-
-    DATA_ROOT/
-      train/
-        class_a/*.JPEG
-        class_b/*.JPEG
-      val/
-        class_a/*.JPEG
-        class_b/*.JPEG
-
-ImageNet-100 works with the same layout, just with 100 class folders.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
 
 from torch.utils.data import DataLoader
-
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -30,7 +11,7 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 def _require_torchvision():
     try:
         from torchvision import datasets, transforms
-    except Exception as exc:  # pragma: no cover - import guard for environments
+    except Exception as exc:
         raise ImportError(
             "torchvision is required for ImageNet datasets and transforms"
         ) from exc

@@ -1,9 +1,3 @@
-"""Aggregate results across seeds: mean +/- 95% CI, Welch t-tests vs baseline.
-
-Usage: python -m experiments.aggregate --dir results/A5_policy/modelnet40 \
-           [--baseline ssp] [--metric accuracy]
-Writes summary.csv and summary.md next to rows.csv.
-"""
 from __future__ import annotations
 
 import argparse
@@ -13,7 +7,7 @@ import sys
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from asp.metrics import ci95, welch_ttest  # noqa: E402
+from asp.metrics import ci95, welch_ttest
 
 
 def main():
@@ -62,7 +56,6 @@ def main():
         w = csv.DictWriter(f, fieldnames=keys); w.writeheader(); w.writerows(out_rows)
     open(os.path.join(a.dir, "summary.md"), "w").write("\n".join(md) + "\n")
     print("\n".join(md))
-
 
 if __name__ == "__main__":
     main()

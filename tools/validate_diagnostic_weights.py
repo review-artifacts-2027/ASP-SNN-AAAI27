@@ -1,5 +1,3 @@
-"""Strictly load every bundled ModelNet source-diagnostic checkpoint."""
-
 from __future__ import annotations
 
 import argparse
@@ -9,7 +7,6 @@ from pathlib import Path
 import torch
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[1]
 MODELNET_ROOT = ROOT / "experiments" / "modelnet"
 CONFIG_ROOT = ROOT / "artifacts" / "source_diagnostics" / "configs"
@@ -18,8 +15,7 @@ EXPECTED_COUNTS = {"modelnet10": 25, "modelnet40": 25}
 
 sys.path.insert(0, str(MODELNET_ROOT))
 
-from asp.model import ASPConfig, ASPModel  # noqa: E402
-
+from asp.model import ASPConfig, ASPModel
 
 VARIANT_OVERRIDES = {
     "A1_theta": {
@@ -88,7 +84,9 @@ def validate_checkpoint(path: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Strictly load every bundled ModelNet diagnostic checkpoint."
+    )
     parser.parse_args()
 
     errors: list[str] = []
@@ -114,7 +112,6 @@ def main() -> int:
 
     print(f"Validated {loaded} diagnostic checkpoints.")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

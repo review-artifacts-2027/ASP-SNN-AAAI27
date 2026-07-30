@@ -1,37 +1,8 @@
-"""
-models/energy.py — Energy accounting for the ASP-SNN pipeline.
-
-Implements the standard SNN energy model:
-    Analog/MAC layers:   E = FLOPs * E_MAC
-    Spiking/AC layers:   E = SOPs  * E_AC,   SOPs = firing_rate * T * FLOPs
-
-Per-operation energy at 45nm (Horowitz, ISSCC 2014):
-    E_MAC = 4.6 pJ   (32-bit float multiply-accumulate)
-    E_AC  = 0.9 pJ   (32-bit float accumulate)
-
-Batch 4 update — added seg head accounting:
-    The per-point seg head runs on N points per sample and its cost is
-    substantial (~15–25% of total FLOPs at ShapeNetPart's config). It's
-    now counted as either analog or spiking depending on `seg_head_type`.
-    This is the change that makes the system-level α number honest at the
-    seg-head boundary — previously seg head was silently analog even when
-    the encoder was spiked.
-
-Batch 3 update — added fine encoder accounting:
-    When use_multiscale=True, a second, smaller encoder is added.
-    Included at analog cost (fine encoder stays analog in Batch 4; will
-    be spiked in a later batch if we choose to).
-"""
-
-E_MAC = 4.6e-12  # joules (4.6 pJ)
-E_AC  = 0.9e-12  # joules (0.9 pJ)
+E_MAC = 4.6e-12
+E_AC  = 0.9e-12
 
 
 def estimate_flops(cfg) -> dict:
-    """
-    FLOP (MAC-count) estimate per pipeline component for one sample.
-    Order-of-magnitude values, sufficient for reported energy ratios.
-    """
     M      = getattr(cfg, 'num_slices', 16)
     K      = getattr(cfg, 'points_per_slice', 128)
     k_edge = getattr(cfg, 'k_edge', 20)
@@ -42,21 +13,15 @@ def estimate_flops(cfg) -> dict:
     T      = getattr(cfg, 'T', 6)
     in_ch  = getattr(cfg, 'in_channels', 6)
 
-    # ── Coarse encoder ────────────────────────────────────────────────
-    # EdgeConv: per slice, per point, per edge: Conv2d(2C -> 128 -> 128)
-    # then Conv1d(128 -> 256 -> feat).
     edgeconv       = M * K * k_edge * (2 * in_ch * 128 + 128 * 128)
     conv1d         = M * K * (128 * 256 + 256 * feat)
     encoder_macs   = edgeconv + conv1d
 
-    # ── Transformer + pos (analog, always) ────────────────────────────
     transformer_macs = M * M * feat + M * feat * ffn * 2
     pos_macs         = M * 3 * feat
 
-    # ── LIF head (ASP loop) ───────────────────────────────────────────
     lif_flops = T * n_lif * hidden * hidden
 
-    # ── B4: Fine encoder (analog for now) ─────────────────────────────
     use_multiscale = getattr(cfg, 'use_multiscale', True)
     fine_encoder_macs = 0.0
     if use_multiscale:
@@ -68,7 +33,6 @@ def estimate_flops(cfg) -> dict:
         fine_conv1d   = M_f * K_f * (128 * 256 + 256 * feat_f)
         fine_encoder_macs = fine_edgeconv + fine_conv1d
 
-    # ── B1: Boundary head (tiny, analog) ──────────────────────────────
     use_bnd = getattr(cfg, 'use_boundary_aware', True)
     boundary_macs = 0.0
     if use_bnd:
@@ -76,15 +40,13 @@ def estimate_flops(cfg) -> dict:
         bnd_hidden = getattr(cfg, 'boundary_hidden', 128)
         boundary_macs = N * (feat * bnd_hidden + bnd_hidden * 1)
 
-    # ── B2: Seg head — analog or spiking ──────────────────────────────
-    # Seg head input dim: local(feat)+global(feat)+point(64)+cat+xyz(3)+fine
     N            = getattr(cfg, 'num_points', 2048)
     point_dim    = getattr(cfg, 'point_feat_dim', 64)
     xyz_dim      = 3
     fine_dim     = getattr(cfg, 'fine_feat_dim', 128) if use_multiscale else 0
     num_cats     = getattr(cfg, 'num_categories', 0) if getattr(cfg, 'use_category', False) else 0
     seg_in_dim   = feat * 2 + point_dim + num_cats + xyz_dim + fine_dim
-    # 3 hidden layers: in→256, 256→256, 256→128, then classifier 128→C
+
     num_classes  = getattr(cfg, 'num_classes', 50)
     seg_head_flops = N * (
         seg_in_dim * 256 + 256 * 256 + 256 * 128 + 128 * num_classes
@@ -103,26 +65,13 @@ def estimate_flops(cfg) -> dict:
 def compute_energy(cfg, mean_firing_rate_head: float,
                    mean_firing_rate_encoder: float = None,
                    mean_firing_rate_seg_head: float = None) -> dict:
-    """
-    Compute system-level energy estimate (joules per sample).
 
-    Args:
-        cfg: config
-        mean_firing_rate_head: LIF head firing rate [0,1]
-        mean_firing_rate_encoder: spiking encoder firing rate [0,1]. Ignored
-            when encoder_type=='analog'.
-        mean_firing_rate_seg_head: spiking seg head firing rate [0,1] (Batch 4).
-            Ignored when seg_head_type=='analog'. When None with a spiking
-            head, defaults to 0.2 (typical measurement in Yao et al. Spike-
-            driven Transformer V2) so the report can still be generated.
-    """
     flops         = estimate_flops(cfg)
     T_enc         = getattr(cfg, 'encoder_T', 4)
     T_seg         = getattr(cfg, 'seg_head_T', 2)
     encoder_type  = getattr(cfg, 'encoder_type', 'analog')
     seg_head_type = getattr(cfg, 'seg_head_type', 'spiking')
 
-    # ── Coarse encoder ────────────────────────────────────────────────
     if encoder_type == 'spiking' and mean_firing_rate_encoder is not None:
         e_encoder     = flops['encoder_macs'] * mean_firing_rate_encoder * T_enc * E_AC
         e_encoder_ann = flops['encoder_macs'] * E_MAC
@@ -130,21 +79,16 @@ def compute_energy(cfg, mean_firing_rate_head: float,
         e_encoder     = flops['encoder_macs'] * E_MAC
         e_encoder_ann = flops['encoder_macs'] * E_MAC
 
-    # ── Fine encoder (always analog in Batch 4) ───────────────────────
     e_fine_encoder     = flops['fine_encoder_macs'] * E_MAC
     e_fine_encoder_ann = flops['fine_encoder_macs'] * E_MAC
 
-    # ── Transformer + pos ─────────────────────────────────────────────
     e_transformer = flops['transformer_analog'] * E_MAC
 
-    # ── Boundary head (small, analog) ─────────────────────────────────
     e_boundary = flops['boundary_macs'] * E_MAC
 
-    # ── LIF head ──────────────────────────────────────────────────────
     e_lif_snn = flops['lif_head_flops'] * mean_firing_rate_head * E_AC
     e_lif_ann = flops['lif_head_flops'] * E_MAC
 
-    # ── B2: Seg head — analog OR spiking (Batch 4) ────────────────────
     if seg_head_type == 'spiking':
         fr_seg = mean_firing_rate_seg_head if mean_firing_rate_seg_head is not None else 0.20
         e_seg_head     = flops['seg_head_flops'] * fr_seg * T_seg * E_AC
@@ -154,7 +98,6 @@ def compute_energy(cfg, mean_firing_rate_head: float,
         e_seg_head_ann = flops['seg_head_flops'] * E_MAC
         fr_seg = None
 
-    # ── Totals ────────────────────────────────────────────────────────
     e_asp_total = (e_encoder + e_fine_encoder + e_transformer
                    + e_boundary + e_lif_snn + e_seg_head)
     e_ann_equiv = (e_encoder_ann + e_fine_encoder_ann + e_transformer
@@ -167,7 +110,6 @@ def compute_energy(cfg, mean_firing_rate_head: float,
     alpha_seg_head = (e_seg_head_ann / max(e_seg_head, 1e-30)
                       if seg_head_type == 'spiking' else 1.0)
 
-    # Fraction of compute that is spiking
     spiking_ops = flops['lif_head_flops']
     total_ops   = (flops['encoder_macs']
                    + flops['fine_encoder_macs']
@@ -208,7 +150,6 @@ def compute_energy(cfg, mean_firing_rate_head: float,
 
 
 def print_energy_report(energy: dict):
-    """Pretty-print the energy accounting."""
     print(f"\n{'='*56}")
     print(f"  Energy Accounting (per sample)")
     print(f"{'='*56}")

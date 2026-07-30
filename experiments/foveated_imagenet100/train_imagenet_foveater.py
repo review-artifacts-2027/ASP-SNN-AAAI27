@@ -1,11 +1,3 @@
-"""
-train_imagenet_foveater.py - Train FoveaTer-style ASP on ImageNet.
-
-Usage:
-    python train_imagenet_foveater.py --config configs/imagenet_foveater.yaml
-    python train_imagenet_foveater.py --config configs/imagenet_foveater.yaml --set smoke=true epochs=1 batch_size=2
-"""
-
 import math
 import os
 import time
@@ -329,7 +321,6 @@ def main():
             )
 
     print(f"\nBest validation accuracy: {best_acc*100:.2f}%")
-
 
 if __name__ == "__main__":
     main()

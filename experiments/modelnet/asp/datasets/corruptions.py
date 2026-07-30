@@ -1,8 +1,3 @@
-"""ModelNet40-C-style corruptions (proposal Sec. 8.2) for points and patches.
-
-Every function: f(x, severity in 1..5, torch.Generator) -> corrupted x.
-Point clouds are resampled back to N points so downstream slicing is unchanged.
-"""
 from __future__ import annotations
 
 import torch
@@ -18,7 +13,6 @@ def _resample(pts: torch.Tensor, n: int, g: torch.Generator) -> torch.Tensor:
     return pts[idx]
 
 
-# ------------------------------------------------------------- point clouds
 def gaussian_noise(pts, severity, g):
     sig = [0.01, 0.02, 0.03, 0.04, 0.05][severity - 1]
     return pts + torch.randn(pts.shape, generator=g) * sig
@@ -40,7 +34,6 @@ def dropout(pts, severity, g):
 
 
 def occlusion_halfspace(pts, severity, g):
-    """Remove the deepest fraction along a random direction (self-occlusion)."""
     frac = [0.15, 0.25, 0.35, 0.45, 0.55][severity - 1]
     d = torch.randn(3, generator=g)
     d = d / d.norm()
@@ -72,7 +65,6 @@ def rotation_jitter(pts, severity, g):
 
 
 def density_gradient(pts, severity, g):
-    """S2: non-uniform sensor-like density along a random axis."""
     k = [1.0, 2.0, 3.0, 4.0, 6.0][severity - 1]
     d = torch.randn(3, generator=g); d = d / d.norm()
     proj = pts @ d
@@ -83,7 +75,6 @@ def density_gradient(pts, severity, g):
         keep = pts[:8]
     return _resample(keep, pts.shape[0], g)
 
-
 POINT_CORRUPTIONS = {"gaussian_noise": gaussian_noise,
                      "uniform_outliers": uniform_outliers,
                      "dropout": dropout,
@@ -93,14 +84,12 @@ POINT_CORRUPTIONS = {"gaussian_noise": gaussian_noise,
                      "density_gradient": density_gradient}
 
 
-# ----------------------------------------------------------------- patches
 def patch_gaussian_noise(patches, severity, g):
     sig = [0.04, 0.08, 0.12, 0.16, 0.2][severity - 1]
     return patches + torch.randn(patches.shape, generator=g) * sig
 
 
 def patch_occlusion(patches, severity, g):
-    """Zero out entire random patches (spatially structured occlusion)."""
     n = [2, 4, 6, 8, 10][severity - 1]
     out = patches.clone()
     idx = torch.randperm(patches.shape[0], generator=g)[:n]
@@ -111,7 +100,6 @@ def patch_occlusion(patches, severity, g):
 def patch_contrast(patches, severity, g):
     c = [0.75, 0.6, 0.45, 0.3, 0.2][severity - 1]
     return patches * c
-
 
 PATCH_CORRUPTIONS = {"gaussian_noise": patch_gaussian_noise,
                      "occlusion": patch_occlusion,

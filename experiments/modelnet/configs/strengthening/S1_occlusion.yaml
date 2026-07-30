@@ -1,7 +1,3 @@
-# S1 — Occlusion stress test (train clean, evaluate under half-space occlusion
-# severity 1-5). Prediction (Thm 6/7): the ASP advantage over fixed-order GROWS
-# with severity because informativeness becomes non-uniform. On real data use
-# ModelNet40 point-cloud occlusion stress test.
 experiment: S1_occlusion
 type: eval_corruption
 corruption: occlusion

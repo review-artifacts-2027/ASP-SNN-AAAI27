@@ -6,7 +6,6 @@ __all__ = ["SyntheticPointDataset", "SYNTHETIC_CLASSES", "corruptions",
 
 
 def build_dataset(name: str, split: str, cfg: dict):
-    """Factory used by experiments/run.py. Heavy deps imported lazily."""
     root = cfg.get("data_root", "./data")
     corr, sev = cfg.get("_corruption_fn"), cfg.get("_severity", 0)
     if name == "synthetic":

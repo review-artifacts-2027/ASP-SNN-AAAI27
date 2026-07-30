@@ -1,22 +1,8 @@
-"""
-models/encoder.py — EdgeConv feature extractor for per-slice encoding.
-
-Takes [B, M, K, C] slices and produces [B, M, feat_dim] tokens.
-Uses static kNN on xyz coordinates (first 3 channels) — never recomputed
-in feature space.
-
-Supports variable input channels:
-    C=6  xyz + normals      (point-cloud part segmentation)
-    C=7  xyz + rgb + height (S3DIS)
-    C=3  xyz only           (fallback — pads with zeros)
-"""
-
 import torch
 import torch.nn as nn
 
 
 def knn_xyz(xyz: torch.Tensor, k: int) -> torch.Tensor:
-    """Static k-NN on xyz.  xyz: [BM, N, 3] -> idx: [BM, N, k]."""
     BM, N, _ = xyz.shape
     dist = torch.cdist(xyz, xyz)
     diag = torch.eye(N, device=xyz.device, dtype=xyz.dtype).unsqueeze(0) * 1e9
@@ -25,24 +11,16 @@ def knn_xyz(xyz: torch.Tensor, k: int) -> torch.Tensor:
 
 
 def build_edge_features(x: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
-    """x: [BM,N,C], idx: [BM,N,k] -> [BM, 2C, N, k] for Conv2d."""
     BM, N, C = x.shape
     k = idx.shape[-1]
     bm_idx = torch.arange(BM, device=x.device).view(BM, 1, 1).expand(BM, N, k)
-    nbrs = x[bm_idx, idx]                              # [BM, N, k, C]
-    x_ctr = x.unsqueeze(2).expand(BM, N, k, C)         # [BM, N, k, C]
-    edge = torch.cat([x_ctr, nbrs - x_ctr], dim=-1)    # [BM, N, k, 2C]
-    return edge.permute(0, 3, 1, 2).contiguous()        # [BM, 2C, N, k]
+    nbrs = x[bm_idx, idx]
+    x_ctr = x.unsqueeze(2).expand(BM, N, k, C)
+    edge = torch.cat([x_ctr, nbrs - x_ctr], dim=-1)
+    return edge.permute(0, 3, 1, 2).contiguous()
 
 
 class EdgeConvFeatureExtractor(nn.Module):
-    """
-    Single static EdgeConv + Conv1d widening + global max-pool.
-
-    Input  : slices [B, M, K, C]  (C >= 3, first 3 = xyz)
-    Output : feats  [B, M, feat_dim]
-    """
-
     def __init__(self, feat_dim: int = 512, k_edge: int = 20,
                  in_channels: int = 6):
         super().__init__()
@@ -70,7 +48,7 @@ class EdgeConvFeatureExtractor(nn.Module):
         xyz = x[:, :, :3]
 
         centroid = xyz.mean(dim=1, keepdim=True)
-        rel_xyz  = xyz - centroid                        # [BM, K, 3]
+        rel_xyz  = xyz - centroid
 
         if C >= self.in_channels:
             extra   = x[:, :, 3:self.in_channels]
@@ -89,10 +67,10 @@ class EdgeConvFeatureExtractor(nn.Module):
                 feat_in = rel_xyz
 
         idx  = knn_xyz(xyz, self.k)
-        edge = build_edge_features(feat_in, idx)         # [BM, 2*in_ch, K, k]
-        feat = self.edge_conv(edge)                      # [BM, 128, K, k]
-        feat = feat.max(dim=-1).values                   # [BM, 128, K]
-        feat = self.relu(self.bn2(self.conv2(feat)))     # [BM, 256, K]
-        feat = self.relu(self.bn3(self.conv3(feat)))     # [BM, feat_dim, K]
-        feat = feat.max(dim=-1).values                   # [BM, feat_dim]
+        edge = build_edge_features(feat_in, idx)
+        feat = self.edge_conv(edge)
+        feat = feat.max(dim=-1).values
+        feat = self.relu(self.bn2(self.conv2(feat)))
+        feat = self.relu(self.bn3(self.conv3(feat)))
+        feat = feat.max(dim=-1).values
         return feat.view(B, M, -1)

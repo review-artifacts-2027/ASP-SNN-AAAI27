@@ -1,37 +1,3 @@
-"""
-models/asp_segmentor.py — ASP-SNN for point cloud segmentation.
-
-Batches 1–3 upgrades (already applied):
-    A2 — Global context pathway
-    A3 — Category-conditional SSP
-    A0 — Dense TET loss support
-    A1 — Soft feature propagation
-    B1 — Boundary-Aware ASP
-    B4 — Multi-scale slicing
-
-Batch 4 upgrade (new):
-    B2 — Spiking Segmentation Head.
-         Replaces the analog 3-layer Linear+BN+ReLU seg head with a spike-
-         driven variant: 3 stacked LIF cells running for T_seg timesteps
-         with static-input encoding. Spikes propagate between layers
-         (inter-layer communication is spike-only, as required by the
-         neuromorphic story). The final analog classifier reads out from
-         the average of the last cell's membrane potential over T_seg
-         timesteps — standard readout pattern from Yao et al. Spike-driven
-         Transformer (NeurIPS 2023).
-
-         Motivation: the seg head runs on N=2048 points per sample, so
-         it's a major energy contributor (~15-25% of total compute in
-         the ShapeNetPart config). Spiking this head is what enables
-         honest system-level α > 5× and is a prerequisite for the paper's
-         "everything spiking" claim.
-
-         Config-gated via `seg_head_type` = 'analog' | 'spiking'. Default
-         is 'spiking' — Batch 3 checkpoints do NOT load into a spiking
-         head (different state_dict keys), which is fine because the
-         seg head is small and retrains quickly with the fresh encoder.
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -41,13 +7,7 @@ from .ssp import SSP
 from .lif import MultiLayerLIF, _spike
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  Small modules
-# ══════════════════════════════════════════════════════════════════════
-
 class PerPointBranch(nn.Module):
-    """Per-point xyz -> unique feature."""
-
     def __init__(self, in_dim: int = 3, out_dim: int = 64):
         super().__init__()
         self.mlp = nn.Sequential(
@@ -66,8 +26,6 @@ class PerPointBranch(nn.Module):
 
 
 class BoundaryHead(nn.Module):
-    """B1 — per-point boundary logit head."""
-
     def __init__(self, feat_dim: int = 512, hidden: int = 128):
         super().__init__()
         self.mlp = nn.Sequential(
@@ -83,28 +41,7 @@ class BoundaryHead(nn.Module):
         return self.mlp(x).reshape(B, N)
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  B2 — Spiking Seg Head primitives (Batch 4)
-# ══════════════════════════════════════════════════════════════════════
-
 class _SegLIFCell(nn.Module):
-    """
-    LIF neuron for the spiking seg head.
-
-    Takes an ALREADY-projected input (Linear + BN done outside), then runs
-    soft-reset LIF dynamics:
-        u_t = leak * u_prev + inp - threshold * s_prev
-        s_t = spike(mpbn(u_t) - threshold)      [ATan surrogate]
-
-    Kept intentionally simpler than models/lif.py:LIFCell — the LIFCell
-    there was designed for the ASP loop (one call per timestep, needs its
-    own fc+bn baked in). The seg head calls the whole 3-layer stack T_seg
-    times, so keeping projection + integration separate lets us precompute
-    static inputs once and cleanly propagate spikes between layers.
-
-    MPBN applied to u_t before the spike function — Guo et al. ICCV 2023.
-    """
-
     def __init__(self, dim: int, leak: float = 0.9, threshold: float = 1.0,
                  use_mpbn: bool = True, learnable_params: bool = True):
         super().__init__()
@@ -146,11 +83,6 @@ class _SegLIFCell(nn.Module):
 
 
 class SegmentationHead(nn.Module):
-    """
-    Analog per-point MLP head — the Batch 3 version. Kept as the
-    fallback for `seg_head_type: 'analog'` (ablation).
-    """
-
     def __init__(self, feat_dim: int = 512, point_feat_dim: int = 64,
                  num_classes: int = 50, num_categories: int = 0,
                  xyz_dim: int = 3, fine_feat_dim: int = 0):
@@ -191,22 +123,6 @@ class SegmentationHead(nn.Module):
 
 
 class SpikingSegmentationHead(nn.Module):
-    """
-    B2 — Spiking seg head. Three stacked LIF cells; static-input encoding
-    over T_seg timesteps; spike-only inter-layer communication; analog
-    classifier reads out the average membrane of the last cell.
-
-    Wire diagram (one timestep):
-        x   ──► fc1 ──► bn1 ─► LIF1 ──► s1
-        s1  ──► fc2 ──► bn2 ─► LIF2 ──► s2
-        s2  ──► fc3 ──► bn3 ─► LIF3 ──► (u3 accumulated, s3 optionally logged)
-
-    Over T_seg timesteps: mem_accum += u3, then logits = classifier(mem_accum/T_seg).
-
-    Firing rate: monitored via optional `self.spike_monitor` (SpikeRateLogger),
-    same interface as MultiLayerLIF for consistency with the energy report.
-    """
-
     def __init__(self, feat_dim: int = 512, point_feat_dim: int = 64,
                  num_classes: int = 50, num_categories: int = 0,
                  xyz_dim: int = 3, fine_feat_dim: int = 0,
@@ -217,25 +133,20 @@ class SpikingSegmentationHead(nn.Module):
 
         in_dim = feat_dim * 2 + point_feat_dim + num_categories + xyz_dim + fine_feat_dim
 
-        # Layer 1: static input -> pre-LIF activation (computed ONCE per forward)
         self.fc1 = nn.Linear(in_dim, 256, bias=False)
         self.bn1 = nn.BatchNorm1d(256)
         self.lif1 = _SegLIFCell(256, leak, threshold, use_mpbn, learnable_params)
 
-        # Layer 2: takes spikes from L1 (recomputed each timestep)
         self.fc2 = nn.Linear(256, 256, bias=False)
         self.bn2 = nn.BatchNorm1d(256)
         self.lif2 = _SegLIFCell(256, leak, threshold, use_mpbn, learnable_params)
 
-        # Layer 3: takes spikes from L2
         self.fc3 = nn.Linear(256, 128, bias=False)
         self.bn3 = nn.BatchNorm1d(128)
         self.lif3 = _SegLIFCell(128, leak, threshold, use_mpbn, learnable_params)
 
-        # Final analog classifier — reads mem_avg [B*N, 128] -> logits [B*N, C]
         self.classifier = nn.Linear(128, num_classes)
 
-        # Firing-rate monitor (attach a SpikeRateLogger for energy accounting)
         self.spike_monitor = None
 
     def forward(self, local_feats, global_feat, point_feats,
@@ -256,10 +167,8 @@ class SpikingSegmentationHead(nn.Module):
         device = x_flat.device
         dtype  = x_flat.dtype
 
-        # Precompute layer-1 pre-LIF (static across T_seg — big speed win)
-        z1 = self.bn1(self.fc1(x_flat))                       # [B*N, 256]
+        z1 = self.bn1(self.fc1(x_flat))
 
-        # Initialize LIF states to zero (standard direct-training convention)
         u1 = torch.zeros(B * N, 256, device=device, dtype=dtype)
         s1 = torch.zeros(B * N, 256, device=device, dtype=dtype)
         u2 = torch.zeros(B * N, 256, device=device, dtype=dtype)
@@ -270,24 +179,20 @@ class SpikingSegmentationHead(nn.Module):
         mem_accum = torch.zeros(B * N, 128, device=device, dtype=dtype)
 
         for t in range(self.T_seg):
-            # Layer 1 — static input each step, LIF integrates
             u1, s1 = self.lif1.step(z1, u1, s1)
             if self.spike_monitor is not None:
                 self.spike_monitor.record(0, s1)
 
-            # Layer 2 — takes SPIKES from L1
             z2 = self.bn2(self.fc2(s1))
             u2, s2 = self.lif2.step(z2, u2, s2)
             if self.spike_monitor is not None:
                 self.spike_monitor.record(1, s2)
 
-            # Layer 3 — takes SPIKES from L2
             z3 = self.bn3(self.fc3(s2))
             u3, s3 = self.lif3.step(z3, u3, s3)
             if self.spike_monitor is not None:
                 self.spike_monitor.record(2, s3)
 
-            # Accumulate MEMBRANE potential of last cell (standard readout)
             mem_accum = mem_accum + u3
 
         mem_avg = mem_accum / self.T_seg
@@ -295,12 +200,7 @@ class SpikingSegmentationHead(nn.Module):
         return logits.reshape(B, N, -1)
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  ASPSegmentor
-# ══════════════════════════════════════════════════════════════════════
-
 class ASPSegmentor(nn.Module):
-
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
@@ -311,7 +211,6 @@ class ASPSegmentor(nn.Module):
         in_ch = getattr(cfg, 'in_channels', 6)
         point_feat_dim = getattr(cfg, 'point_feat_dim', 64)
 
-        # Coarse encoder
         self.feature_extractor = EdgeConvFeatureExtractor(
             feat_dim=cfg.feat_dim,
             k_edge=cfg.k_edge,
@@ -332,7 +231,6 @@ class ASPSegmentor(nn.Module):
             norm_first=True,
         )
 
-        # B4: Fine-scale encoder
         self.use_multiscale = getattr(cfg, 'use_multiscale', True)
         self.fine_feat_dim  = getattr(cfg, 'fine_feat_dim', 128) if self.use_multiscale else 0
         if self.use_multiscale:
@@ -350,7 +248,6 @@ class ASPSegmentor(nn.Module):
             self.fine_encoder  = None
             self.fine_pos_proj = None
 
-        # B1: Boundary head + SSP boundary bias
         self.use_boundary_aware = getattr(cfg, 'use_boundary_aware', True)
         if self.use_boundary_aware:
             self.boundary_head = BoundaryHead(
@@ -360,7 +257,6 @@ class ASPSegmentor(nn.Module):
         else:
             self.boundary_head = None
 
-        # SSP with A3 category conditioning + B1 boundary bias
         self.ssp = SSP(
             belief_dim=cfg.hidden_dim,
             geo_dim=cfg.geo_dim,
@@ -373,7 +269,6 @@ class ASPSegmentor(nn.Module):
         self.belief_to_feat = nn.Linear(cfg.hidden_dim, cfg.feat_dim, bias=False)
         self.belief_norm    = nn.LayerNorm(cfg.hidden_dim)
 
-        # A2: Global context pathway
         self.global_context = nn.Sequential(
             nn.Linear(cfg.feat_dim * 2, cfg.feat_dim, bias=False),
             nn.LayerNorm(cfg.feat_dim),
@@ -381,11 +276,9 @@ class ASPSegmentor(nn.Module):
         )
         self.context_gate = nn.Parameter(torch.tensor(0.5))
 
-        # A0: Belief-to-seg-global (zero-init)
         self.belief_to_seg_global = nn.Linear(cfg.hidden_dim, cfg.feat_dim, bias=False)
         nn.init.zeros_(self.belief_to_seg_global.weight)
 
-        # LIF head (num_classes=1 stub, not used for seg output)
         self.lif_head = MultiLayerLIF(
             feat_dim=cfg.feat_dim,
             hidden_dim=cfg.hidden_dim,
@@ -407,9 +300,6 @@ class ASPSegmentor(nn.Module):
             pp_in = 6
         self.point_branch = PerPointBranch(in_dim=pp_in, out_dim=point_feat_dim)
 
-        # ── B2: Choose seg head type ──────────────────────────────────
-        # 'spiking' (new default) uses SpikingSegmentationHead
-        # 'analog'  falls back to Batch 3 SegmentationHead for ablation
         self.seg_head_type = getattr(cfg, 'seg_head_type', 'spiking')
         if self.seg_head_type == 'spiking':
             self.seg_head = SpikingSegmentationHead(
@@ -443,9 +333,6 @@ class ASPSegmentor(nn.Module):
             return [1.0]
         return [0.1 + 0.9 * (t / (T - 1)) ** 2 for t in range(T)]
 
-    # ══════════════════════════════════════════════════════════════════
-    #  A1 — Soft Feature Propagation
-    # ══════════════════════════════════════════════════════════════════
     def _soft_feature_propagation(self, all_feats, geo, pts_features, sid_arr):
         B, M, feat_dim = all_feats.shape
         N = pts_features.shape[1]
@@ -476,9 +363,6 @@ class ASPSegmentor(nn.Module):
         weights_typed = weights.to(knn_feats.dtype)
         return (weights_typed.unsqueeze(-1) * knn_feats).sum(dim=-2)
 
-    # ══════════════════════════════════════════════════════════════════
-    #  B1 — Per-slice boundary score aggregation
-    # ══════════════════════════════════════════════════════════════════
     def _slice_boundary_scores(self, bnd_probs, sid_arr, M):
         B, N = bnd_probs.shape
         device = bnd_probs.device
@@ -488,9 +372,6 @@ class ASPSegmentor(nn.Module):
         counts.scatter_add_(1, sid_arr, torch.ones_like(bnd_probs))
         return sums / counts.clamp(min=1.0)
 
-    # ══════════════════════════════════════════════════════════════════
-    #  Forward
-    # ══════════════════════════════════════════════════════════════════
     def forward(self, slices, geo, sid_arr, cat_ids, pts_features,
                 fine_slices=None, fine_geo=None, fine_sid_arr=None,
                 training=True):
@@ -515,23 +396,19 @@ class ASPSegmentor(nn.Module):
 
         point_feats = self.point_branch(pts_features)
 
-        # Coarse encoding
         all_feats = self.feature_extractor(slices)
         pos       = self.pos_proj(geo[:, :, :3])
         all_feats = all_feats + pos
         all_feats = self.slice_transformer(all_feats)
 
-        # A2
         ctx_mean   = all_feats.mean(dim=1)
         ctx_max    = all_feats.max(dim=1).values
         global_ctx = self.global_context(torch.cat([ctx_mean, ctx_max], dim=-1))
 
-        # A1: coarse local features
         local_feats = self._soft_feature_propagation(
             all_feats, geo, pts_features, sid_arr,
         )
 
-        # B4: fine encoding + fine local features
         fine_local_feats = None
         if self.use_multiscale and fine_slices is not None:
             fine_all_feats = self.fine_encoder(fine_slices)
@@ -541,7 +418,6 @@ class ASPSegmentor(nn.Module):
                 fine_all_feats, fine_geo, pts_features, fine_sid_arr,
             )
 
-        # B1: boundary head + per-slice boundary scores
         bnd_logits       = None
         slice_bnd_scores = None
         if self.boundary_head is not None:
@@ -553,7 +429,6 @@ class ASPSegmentor(nn.Module):
 
         pts_xyz = pts_features[:, :, :3]
 
-        # Sort for SSP
         order     = geo[:, :, 6].argsort(dim=1, descending=True)
         batch_idx = torch.arange(B, device=device).unsqueeze(1)
         geo_ord          = geo[batch_idx, order]
@@ -562,7 +437,6 @@ class ASPSegmentor(nn.Module):
         if slice_bnd_scores is not None:
             bnd_scores_ord = slice_bnd_scores[batch_idx, order]
 
-        # ASP loop
         states              = self.lif_head.init_state(B, device)
         belief              = torch.zeros(B, self.cfg.hidden_dim, device=device)
         vis_mask            = torch.zeros(B, M, dtype=torch.bool, device=device)
@@ -595,8 +469,6 @@ class ASPSegmentor(nn.Module):
 
             _, states, u_last = self.lif_head.step(e_t, states)
 
-            # A0: per-timestep seg logits (calls the seg head — analog OR
-            # spiking, doesn't matter, same interface)
             if compute_per_t:
                 belief_live = self.belief_norm(u_last)
                 global_t = global_ctx + self.belief_to_seg_global(belief_live)
@@ -609,7 +481,6 @@ class ASPSegmentor(nn.Module):
             belief = self.belief_norm(u_last.detach())
             belief_list.append(belief)
 
-        # Final part_logits
         if compute_per_t:
             part_logits = per_timestep_logits[-1]
         else:

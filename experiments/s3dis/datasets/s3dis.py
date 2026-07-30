@@ -1,29 +1,3 @@
-"""
-datasets/s3dis.py — S3DIS dataset for indoor scene segmentation.
-
-Stanford Large-Scale 3D Indoor Spaces: 6 areas, 271 rooms, 13 classes.
-Protocol: train on Areas 1,2,3,4,6 — test on Area 5.
-
-Each room is stored as an .npy file with columns:
-    [x, y, z, r, g, b, semantic_label]  (RGB in 0-255)
-
-Returns per sample (train mode, 7 items with E1 enabled):
-    slices        [M, K, C]
-    geo           [M, 8]
-    pts_features  [N, F]
-    sid_arr       [N]
-    sem_labels    [N]
-    cat_id        0
-    room_summary  [D_room]     precomputed room-level prior (E1)
-
-Returns per sample (eval mode when _return_meta=True, 9 items):
-    ... same 7 items ...
-    room_idx      int
-    orig_indices  [N]
-
-If cfg.use_room_prior is False, room_summary is omitted (6 / 8 items).
-"""
-
 import os
 import glob
 import numpy as np
@@ -32,7 +6,6 @@ from torch.utils.data import Dataset
 from .slicing import slice_point_cloud, assign_points_to_slices, compute_geo
 from .transforms import augment_seg
 from models.room_encoder import compute_room_summary_np, summary_dim
-
 
 CLASS_NAMES = [
     'ceiling', 'floor', 'wall', 'beam', 'column', 'window',
@@ -45,8 +18,6 @@ TEST_AREA = 5
 
 
 class S3DISDataset(Dataset):
-    """S3DIS dataset with block-based sampling + optional room-level prior."""
-
     def __init__(self, data_dir: str, split: str, cfg=None):
         assert split in ('train', 'test')
         self.split = split
@@ -56,7 +27,6 @@ class S3DISDataset(Dataset):
         self.use_rgb = getattr(cfg, 'use_rgb', True)
         self.use_height = getattr(cfg, 'use_height', True)
 
-        # E1: room-level prior config
         self.use_room_prior = getattr(cfg, 'use_room_prior', False)
         self.room_prior_anchors = getattr(cfg, 'room_prior_anchors', 64)
         self.room_prior_k = getattr(cfg, 'room_prior_k', 32)
@@ -85,7 +55,6 @@ class S3DISDataset(Dataset):
             room_data = np.load(npy_path)
             self.rooms.append(room_data.astype(np.float32))
 
-        # Per-room z bounds
         self.room_z_bounds = []
         for room in self.rooms:
             z = room[:, 2]
@@ -95,7 +64,6 @@ class S3DISDataset(Dataset):
                 z_max = z_min + 1.0
             self.room_z_bounds.append((z_min, z_max))
 
-        # E1: precompute room summaries (once, cached to disk)
         self.room_summaries = None
         if self.use_room_prior:
             self.room_summaries = self._compute_or_load_summaries(
@@ -122,7 +90,7 @@ class S3DISDataset(Dataset):
 
     def _compute_or_load_summaries(self, data_dir: str, npy_paths: list,
                                    split: str, test_area: int) -> np.ndarray:
-        """Compute [num_rooms, D_room] summaries once, cache to disk."""
+
         cache_name = (
             f"s3dis_room_summaries_area{test_area}_{split}_"
             f"K{self.room_prior_anchors}_k{self.room_prior_k}_"
@@ -134,7 +102,7 @@ class S3DISDataset(Dataset):
             summaries = np.load(cache_path).astype(np.float32)
             expected_D = summary_dim(self.use_rgb, self.use_height) * \
                          self.room_prior_anchors * 2 // (2 * self.room_prior_anchors) * self.room_prior_anchors
-            # Sanity check on cached dim
+
             if summaries.shape == (len(self.rooms),
                                    summary_dim(self.use_rgb, self.use_height)):
                 print(f"[S3DIS] Loaded cached room summaries → {cache_path}")
@@ -152,7 +120,7 @@ class S3DISDataset(Dataset):
                 use_rgb=self.use_rgb,
                 use_height=self.use_height,
                 room_z_bounds=self.room_z_bounds[ri],
-                seed=ri,   # per-room seed for determinism
+                seed=ri,
             )
             summaries.append(s)
         summaries = np.stack(summaries).astype(np.float32)
@@ -327,7 +295,6 @@ class S3DISDataset(Dataset):
             0,
         )
 
-        # E1: append precomputed room summary
         if self.use_room_prior:
             base = base + (self.room_summaries[room_idx].copy(),)
 
@@ -343,7 +310,6 @@ class S3DISDataset(Dataset):
 
 
 def compute_class_weights(data_dir: str, test_area: int = 5) -> np.ndarray:
-    """Compute inverse-frequency class weights from training areas."""
     cache_path = os.path.join(
         data_dir, f"s3dis_class_weights_area{test_area}.npy"
     )

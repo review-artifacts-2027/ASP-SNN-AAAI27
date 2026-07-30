@@ -1,14 +1,3 @@
-"""ModelNet10/40 loader (modelnet40_normal_resampled format, PointNet++ standard).
-
-Download (once):
-    https://shapenet.cs.stanford.edu/media/modelnet40_normal_resampled.zip
-Extract to <root>/modelnet40_normal_resampled/.  ModelNet10 uses the
-modelnet10_shape_names.txt / *_train.txt / *_test.txt splits in the same folder.
-
-Each shape file: N rows "x,y,z,nx,ny,nz"; we read xyz, sample n_points, and
-apply the standard normalization + augmentation (random z-rotation, scale,
-jitter) at train time.
-"""
 from __future__ import annotations
 
 import os

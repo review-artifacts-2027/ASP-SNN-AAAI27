@@ -1,35 +1,9 @@
-"""
-validate_oracle.py  —  CPU smoke-test of the M=16 selection ablation machinery.
-
-Purpose
--------
-De-risk the H100 launch by proving, on a small synthetic task where slice
-*order* provably matters, that:
-
-  (1) the oracle-greedy prefix-replay rollout is CORRECT
-      -> when fed the learned policy's own order, it reproduces the standard
-         forward_infer logits BYTE-IDENTICALLY (invariant test);
-  (2) the four selection rules {learned, random, fps_order, oracle} produce a
-      SEPARABLE accuracy@k anytime curve at a budget k < M (the whole point of
-      forcing tau-bar < M);
-  (3) oracle >= {random, fps} and, when the policy is well-trained,
-      learned > {random, fps} -> the experiment can detect order-dependence.
-
-The LIF/SSP/multi-head/readout semantics are reconstructed FAITHFULLY from the
-rigor-suite source (asp/lif.py, asp/ssp.py, asp/multi_head.py, asp/model.py).
-This is NOT ModelNet40 -- it is a controlled synthetic where ground-truth
-informative slices exist, so that "order matters" is guaranteed by construction.
-The real question (does ModelNet40 have exploitable order structure at M=16) is
-exactly what the cluster run answers; this harness only proves the CODE is right.
-"""
 from __future__ import annotations
 import math, torch, torch.nn as nn, torch.nn.functional as F
 
 torch.manual_seed(0)
 
-# ============================================================================
-# 1. Faithful module reconstructions (verbatim semantics from the suite)
-# ============================================================================
+
 class _Surrogate(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, k):
@@ -66,7 +40,6 @@ class LIFCell(nn.Module):
         return o
 
 class LeakyReadout(nn.Module):
-    """Non-spiking leaky logit integrator (faithful stand-in for asp.lif.LeakyReadout)."""
     def __init__(self, dim, num_classes, tau=2.0):
         super().__init__()
         self.fc = nn.Linear(dim, num_classes)
@@ -118,9 +91,7 @@ class SSP(nn.Module):
         self.Wq = nn.Linear(d_desc, d_ssp, bias=False)
         if policy == "geometry_only":
             self.static_key = nn.Parameter(torch.randn(d_ssp) / d_ssp ** 0.5)
-        # Static geometry key: implements the paper's "max-entropy prior at t=0"
-        # (Prop. geom). Without it, key=Wk(u)=0 at t=0 -> score==0 -> arbitrary
-        # first pick, geometry ignored on the cold start.
+
         if geom_bias:
             self.k0 = nn.Parameter(torch.randn(d_ssp) / d_ssp ** 0.5)
     def param_count(self): return sum(p.numel() for p in self.parameters())
@@ -148,7 +119,6 @@ class SSP(nn.Module):
         return F.gumbel_softmax(scores, tau=tau, hard=True)
 
 class PointSliceEncoder(nn.Module):
-    """Minimal per-slice encoder: (B,K,d_in) -> (B,K,D). Stands in for EdgeConv stem."""
     def __init__(self, d_in, d_model, hidden=64):
         super().__init__()
         self.net = nn.Sequential(nn.Linear(d_in, hidden), nn.ReLU(),
@@ -156,10 +126,6 @@ class PointSliceEncoder(nn.Module):
     def forward(self, regions, anchors=None): return self.net(regions)
 
 
-# ============================================================================
-# 2. ASP model-lite: forward_train / forward_infer / forward_infer_ORACLE
-#    (forward_infer + oracle rollout are the exact logic for the real drop-in)
-# ============================================================================
 class ASPLite(nn.Module):
     def __init__(self, d_in, d_model, num_classes, K, d_desc=6, policy="ssp",
                  head_layers=3, tau_mem=2.0, geom_bias=False):
@@ -170,7 +136,7 @@ class ASPLite(nn.Module):
         self.head = MultiLayerLIFHead(d_model, head_layers, tau=tau_mem)
         self.readout = LeakyReadout(d_model, num_classes, tau_mem)
         self.ssp = SSP(d_model, d_desc, 64, 0, policy, True, geom_bias=geom_bias)
-    # ---- helpers mirroring the real model ----
+
     def _prep(self, regions):
         B = regions.shape[0]
         self.head.reset_state(B, regions.device)
@@ -180,7 +146,7 @@ class ASPLite(nn.Module):
     def _margin(logits):
         p = F.softmax(logits, -1); top2 = p.topk(2, -1).values
         return top2[:, 0] - top2[:, 1]
-    # ---- training (Gumbel-ST, all K steps) ----
+
     def forward_train(self, regions, desc, tau_gumbel=1.0):
         B = self._prep(regions); K = self.K
         feats = self.encoder(regions)
@@ -197,7 +163,7 @@ class ASPLite(nn.Module):
             visited = visited | (w.detach() > 0.5)
             u = self.head.membrane
         return {"logits": torch.stack(logits_all, 1), "firing_rate": torch.stack(fr).mean()}
-    # ---- inference (hard argmax, records full trajectory) ----
+
     @torch.no_grad()
     def forward_infer(self, regions, desc):
         B = self._prep(regions); K = self.K
@@ -216,23 +182,16 @@ class ASPLite(nn.Module):
         return {"logits": torch.stack(logits_all, 1),
                 "margins": torch.stack(margins_all, 1),
                 "selections": torch.stack(sels, 1)}
-    # ---- ORACLE-GREEDY (label-driven, prefix-replay rollout) ----
+
     @torch.no_grad()
     def forward_infer_oracle(self, regions, desc, labels, score="ce"):
-        """At each step, among unvisited slices pick the one that MINIMISES
-        cross-entropy to the true label (score='ce') -> max log p(true).
-        Robust prefix-replay: reset -> replay committed slices -> step candidate.
-        Returns the same dict shape as forward_infer (byte-compatible with
-        metrics.theta_sweep / accuracy@k)."""
         B, K, dev = regions.shape[0], self.K, regions.device
         feats = self.encoder(regions)
-        committed = torch.full((B, K), -1, dtype=torch.long, device=dev)  # prefix
+        committed = torch.full((B, K), -1, dtype=torch.long, device=dev)
         n_committed = 0
         logits_all, margins_all, sels = [], [], []
 
         def replay_prefix(prefix, length):
-            """reset state and replay `length` committed slices; leaves state ready
-            for the (length+1)-th step. Returns nothing (mutates head/readout state)."""
             self.head.reset_state(B, dev); self.readout.reset_state(B, dev)
             for j in range(length):
                 e = feats[torch.arange(B), prefix[:, j]]
@@ -245,16 +204,16 @@ class ASPLite(nn.Module):
             best_score = torch.full((B,), -1e30, device=dev)
             best_idx = torch.zeros(B, dtype=torch.long, device=dev)
             for m in range(K):
-                replay_prefix(committed, n_committed)          # state after prefix
+                replay_prefix(committed, n_committed)
                 e = feats[:, m]
                 logits_m = self.readout(self.head(self.proj(e)))
                 logp = F.log_softmax(logits_m, -1)
-                sc = logp[torch.arange(B), labels]             # log p(true) == -CE
-                sc = sc.masked_fill(visited[:, m], -1e30)      # can't reselect
+                sc = logp[torch.arange(B), labels]
+                sc = sc.masked_fill(visited[:, m], -1e30)
                 take = sc > best_score
                 best_score = torch.where(take, sc, best_score)
                 best_idx = torch.where(take, torch.full_like(best_idx, m), best_idx)
-            # commit best: replay prefix then take the committed step to log its logits
+
             replay_prefix(committed, n_committed)
             e = feats[torch.arange(B), best_idx]
             logits = self.readout(self.head(self.proj(e)))
@@ -263,7 +222,7 @@ class ASPLite(nn.Module):
         return {"logits": torch.stack(logits_all, 1),
                 "margins": torch.stack(margins_all, 1),
                 "selections": torch.stack(sels, 1)}
-    # ---- held-representation swap: run ANY policy's selection on THIS backbone ----
+
     @torch.no_grad()
     def forward_infer_with_policy(self, regions, desc, policy):
         saved = self.ssp.policy; self.ssp.policy = policy
@@ -272,26 +231,18 @@ class ASPLite(nn.Module):
         return out
 
 
-# ============================================================================
-# 3. Synthetic ORDER-DEPENDENT dataset
-#    A few "informative" slices carry a class-correlated signal; their 6-D
-#    descriptor's first coordinate is high (so a learned/geometry policy CAN
-#    find them). The rest are noise. Informative slices are placed at RANDOM
-#    positions, so fixed (fps) order and random order usually see noise first
-#    -> order matters, and there is a real oracle ordering.
-# ============================================================================
 def make_synth(n_per_class, C, K, d_in, n_inf=3, seed=0):
     g = torch.Generator().manual_seed(seed)
-    protos = torch.randn(C, d_in, generator=g) * 2.5           # class prototypes
+    protos = torch.randn(C, d_in, generator=g) * 2.5
     N = n_per_class * C
-    regions = torch.randn(N, K, d_in, generator=g) * 0.9       # noise base
-    desc = torch.randn(N, K, 6, generator=g) * 0.3             # geometry-ish
+    regions = torch.randn(N, K, d_in, generator=g) * 0.9
+    desc = torch.randn(N, K, 6, generator=g) * 0.3
     labels = torch.arange(C).repeat_interleave(n_per_class)
     for i in range(N):
         y = labels[i].item()
-        pos = torch.randperm(K, generator=g)[:n_inf]           # random informative slices
+        pos = torch.randperm(K, generator=g)[:n_inf]
         regions[i, pos] = protos[y].unsqueeze(0) + torch.randn(n_inf, d_in, generator=g) * 0.7
-        desc[i, pos, 0] += 2.5                                 # informativeness cue in descriptor
+        desc[i, pos, 0] += 2.5
     return regions, desc, labels
 
 def loader(regions, desc, labels, bs, shuffle):
@@ -302,9 +253,6 @@ def loader(regions, desc, labels, bs, shuffle):
         yield regions[b], desc[b], labels[b]
 
 
-# ============================================================================
-# 4. Train / eval helpers
-# ============================================================================
 def tet_loss(logits, labels, tet_lambda=0.05):
     B, T, C = logits.shape
     ce = F.cross_entropy(logits.reshape(B*T, C),
@@ -330,13 +278,11 @@ def train(model, tr, epochs, lr=2e-3):
 
 @torch.no_grad()
 def acc_at_k(out, labels, Ks):
-    """accuracy@k = argmax of logits AFTER exactly k observed slices."""
     logits = out["logits"]
     return {k: (logits[:, k-1].argmax(-1) == labels).float().mean().item() for k in Ks}
 
 @torch.no_grad()
 def theta_metrics(out, labels, theta):
-    """avg_slices (tau-bar) and accuracy at margin-exit threshold theta."""
     m = out["margins"]; B, T = m.shape
     hit = m > theta
     es = torch.where(hit.any(1), hit.float().argmax(1) + 1, torch.full((B,), T))
@@ -345,13 +291,10 @@ def theta_metrics(out, labels, theta):
     return es.float().mean().item(), (preds == labels).float().mean().item()
 
 
-# ============================================================================
-# 5. RUN: 3 seeds, train learned/random/fps end-to-end; oracle + held-rep swaps
-# ============================================================================
 def main():
     C, K, d_in, d_model = 8, 16, 12, 64
     Ks = [1, 2, 3, 4, 6, 8, 16]
-    THETA = 0.30                      # LOW theta -> forces tau-bar < M (the design condition)
+    THETA = 0.30
     EPOCHS = 40
     SEEDS = [0, 1, 2]
 
@@ -359,36 +302,31 @@ def main():
     te_r, te_d, te_y = make_synth(40, C, K, d_in, seed=200)
 
     import numpy as np
-    agg = {}   # variant -> {k: [accs across seeds]}, plus ('tau','acc') at theta
+    agg = {}
     invariant_max_abs = 0.0
 
     for seed in SEEDS:
         torch.manual_seed(seed)
         models = {}
         for pol, gb in [("ssp", False), ("random", False), ("fixed", False), ("ssp_geom", True)]:
-            torch.manual_seed(seed)               # identical init across policies
+            torch.manual_seed(seed)
             base = "ssp" if pol == "ssp_geom" else pol
             m = ASPLite(d_in, d_model, C, K, policy=base, geom_bias=gb)
             train(m, lambda: loader(tr_r, tr_d, tr_y, 128, True), EPOCHS)
             models[pol] = m
 
-        # ---- end-to-end: each policy eval'd with its own rule ----
         results = {}
         results["learned"]     = models["ssp"].forward_infer(te_r, te_d)
         results["learned+geom"]= models["ssp_geom"].forward_infer(te_r, te_d)
         results["random"]      = models["random"].forward_infer(te_r, te_d)
         results["fps_order"]   = models["fixed"].forward_infer(te_r, te_d)
-        # ---- oracle ceiling on the learned backbone ----
+
         results["oracle"]   = models["ssp"].forward_infer_oracle(te_r, te_d, te_y)
-        # ---- held-representation swaps on the learned backbone (diagnostic) ----
+
         results["swap_random@learned"] = models["ssp"].forward_infer_with_policy(te_r, te_d, "random")
         results["swap_fps@learned"]    = models["ssp"].forward_infer_with_policy(te_r, te_d, "fixed")
 
-        # ---- CORRECTNESS INVARIANT: oracle replay fed the learned order must
-        #      reproduce forward_infer logits byte-identically. We test the
-        #      replay machinery by replaying the learned selection order and
-        #      comparing to forward_infer's logits. ----
-        learned_sel = results["learned"]["selections"]           # (B,K)
+        learned_sel = results["learned"]["selections"]
         rep = replay_check(models["ssp"], te_r, te_d, learned_sel)
         d = (rep - results["learned"]["logits"]).abs().max().item()
         invariant_max_abs = max(invariant_max_abs, d)
@@ -400,7 +338,6 @@ def main():
             for kk in Ks: agg[name][kk].append(ak[kk])
             agg[name]["tau"].append(tau); agg[name]["atheta"].append(atheta)
 
-    # ---------------- report ----------------
     def ms(v): return f"{np.mean(v)*100:5.1f}±{np.std(v)*100:3.1f}"
     def msf(v): return f"{np.mean(v):4.2f}±{np.std(v):3.2f}"
     print("\n" + "="*94)
@@ -417,7 +354,7 @@ def main():
         row += f"    {msf(agg[name]['tau'])}  {ms(agg[name]['atheta'])}"
         print(row)
     print("="*94)
-    # key comparisons at a small budget (k=3, where order matters most)
+
     k = 3
     l, r, f, o = (np.mean(agg[n][k]) for n in ["learned","random","fps_order","oracle"])
     print(f"\n@k={k}:  fps={f*100:.1f}  random={r*100:.1f}  learned={l*100:.1f}  oracle={o*100:.1f}")
@@ -426,9 +363,6 @@ def main():
 
 @torch.no_grad()
 def replay_check(model, regions, desc, order):
-    """Replay a GIVEN selection order through the head/readout and return the
-    per-step logits trajectory. Must equal forward_infer's logits when `order`
-    is forward_infer's own selection order -> validates the replay used by oracle."""
     B, K, dev = regions.shape[0], model.K, regions.device
     feats = model.encoder(regions)
     model.head.reset_state(B, dev); model.readout.reset_state(B, dev)

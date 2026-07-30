@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-"""
-Convert raw ShapeNetPart (v0_normal benchmark layout) into the standard
-PointNet-style HDF5 format used by shapenet_part_seg_hdf5_data folders.
 
-Expected --raw_dir layout (this is what the Kaggle mitkir/shapenet mirror
-extracts to):
-    <raw_dir>/synsetoffset2category.txt
-    <raw_dir>/train_test_split/shuffled_{train,val,test}_file_list.json
-    <raw_dir>/<synset_id>/<shape_id>.txt   (7 cols: x y z nx ny nz part_label)
-
-Output (--out_dir):
-    all_object_categories.txt
-    {train,val,test}_hdf5_file_list.txt
-    ply_data_{train,val,test}<N>.h5   with datasets: data, label, pid
-
-Usage:
-    python convert_shapenet_raw.py \
-        --raw_dir /kaggle/working/data/shapenetcore_partanno_segmentation_benchmark_v0_normal \
-        --out_dir /kaggle/working/data/shapenet_part_seg_hdf5_data
-"""
 import argparse
 import json
 import os
@@ -26,8 +7,6 @@ import os
 import h5py
 import numpy as np
 
-# Standard 16-category ShapeNetPart mapping (synset IDs match the official
-# benchmark and torch_geometric's ShapeNet loader).
 CATEGORY_IDS = {
     'Airplane': '02691156', 'Bag': '02773838', 'Cap': '02954340', 'Car': '02958343',
     'Chair': '03001627', 'Earphone': '03261776', 'Guitar': '03467517', 'Knife': '03624134',
@@ -37,11 +16,6 @@ CATEGORY_IDS = {
 CATEGORY_ORDER = list(CATEGORY_IDS.keys())
 SYNSET_TO_LABEL = {synset: i for i, synset in enumerate(CATEGORY_IDS.values())}
 
-# Global part-id offsets — MUST match datasets/shapenetpart.py's
-# CATEGORY_TO_PARTS exactly (note: Skateboard=2 parts, Table=4 parts in
-# that file, which differs from the common PointNet convention of 3/3 —
-# using their exact mapping here so generated pid values stay consistent
-# with what their loader/eval code assumes per category).
 SEG_CLASSES = {
     'Airplane': [0, 1, 2, 3], 'Bag': [4, 5], 'Cap': [6, 7], 'Car': [8, 9, 10, 11],
     'Chair': [12, 13, 14, 15], 'Earphone': [16, 17, 18], 'Guitar': [19, 20, 21],
@@ -74,8 +48,6 @@ def sample_points(xyz, seg, num_points, rng):
 
 
 def convert_entries(raw_dir, out_dir, out_split_name, entries, num_points, chunk_size, seed):
-    """Write entries (list of (synset, shape_id)) to train*.h5 / test*.h5
-    files, matching the glob pattern datasets/shapenetpart.py expects."""
     rng = np.random.default_rng(seed)
     chunk_idx = 0
     skipped = 0
@@ -100,11 +72,7 @@ def convert_entries(raw_dir, out_dir, out_split_name, entries, num_points, chunk
                 skipped += 1
                 continue
             xyz = raw[:, 0:3]
-            # NOTE: the raw label column in this dataset is already the
-            # GLOBAL 0-49 part id, not a per-category local index -- do
-            # NOT add a category offset here. (Confirmed empirically:
-            # adding the offset produced ids exactly one category-offset
-            # too high, e.g. Knife shapes landing in Skateboard's range.)
+
             global_part = raw[:, 6].astype(int)
 
             valid_ids = SYNSET_TO_VALID_PARTS[synset]
@@ -123,8 +91,6 @@ def convert_entries(raw_dir, out_dir, out_split_name, entries, num_points, chunk
         if valid == 0:
             continue
 
-        # Filename MUST start with the split name ("train"/"test") to match
-        # the loader's glob(f"{split}*.h5") — no "ply_data_" prefix.
         fname = f'{out_split_name}{chunk_idx}.h5'
         with h5py.File(os.path.join(out_dir, fname), 'w') as hf:
             hf.create_dataset('data', data=data[:valid])
@@ -150,9 +116,6 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # datasets/shapenetpart.py only reads "train" and "test" — merge the
-    # official train+val splits into "train" (12137+1870=14007, matching
-    # the loader's own docstring).
     train_entries = load_split(args.raw_dir, 'train') + load_split(args.raw_dir, 'val')
     test_entries = load_split(args.raw_dir, 'test')
 
@@ -162,7 +125,6 @@ def main():
                      args.num_points, args.chunk_size, args.seed)
 
     print('Done ->', args.out_dir)
-
 
 if __name__ == '__main__':
     main()

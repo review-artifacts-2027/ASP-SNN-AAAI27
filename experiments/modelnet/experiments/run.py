@@ -1,15 +1,3 @@
-"""Unified experiment runner for all ablations (A1-A5) and strengthening
-experiments (S1-S6) on every dataset.
-
-Usage:
-    python -m experiments.run --base configs/base/modelnet40.yaml \
-        --exp configs/ablations/A1_theta.yaml [--seeds 0 1 2 3 4] [--epochs N]
-    python -m experiments.run --base configs/base/modelnet10.yaml \
-        --exp configs/strengthening/S1_occlusion.yaml
-
-Outputs: results/<experiment>/<dataset>/seed<k>/<variant>/summary.json (+model.pt)
-and a flat rows.csv per experiment for aggregation.
-"""
 from __future__ import annotations
 
 import argparse
@@ -24,11 +12,11 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from asp import metrics as M                              # noqa: E402
-from asp.datasets import build_dataset, corruptions       # noqa: E402
-from asp.eval import evaluate                             # noqa: E402
-from asp.model import ASPConfig, ASPModel                 # noqa: E402
-from asp.train import train_model                         # noqa: E402
+from asp import metrics as M
+from asp.datasets import build_dataset, corruptions
+from asp.eval import evaluate
+from asp.model import ASPConfig, ASPModel
+from asp.train import train_model
 
 
 def make_loaders(cfg, corruption_fn=None, severity=0):
@@ -63,8 +51,6 @@ def summarize(model, ev, cfg, thetas):
 
 @torch.no_grad()
 def forced_start_eval(model, loader, device, force_steps: int, theta: float):
-    """S3: first `force_steps` selections forced to the policy's WORST-ranked
-    unvisited slice, then the policy resumes. Returns accuracy + avg slices."""
     model.eval()
     accs, exits = [], []
     for regions, desc, anchors, labels in loader:
@@ -81,7 +67,7 @@ def forced_start_eval(model, loader, device, force_steps: int, theta: float):
         exit_logits = torch.zeros(B, model.cfg.num_classes, device=device)
         for t in range(K):
             s = model.ssp.scores(u, d, visited)
-            if t < force_steps:                       # adversarial: pick the worst
+            if t < force_steps:
                 masked_min = s.masked_fill(visited, 1e9)
                 idx = masked_min.argmin(-1)
             else:
@@ -183,7 +169,6 @@ def run_variant(base_cfg, variant, exp, seed, device, out_dir, epochs_override):
 
 
 def _train_prebuilt(model, cfg, tr, te, device):
-    """train_model but with an externally built (partially frozen) model."""
     import asp.train as T
     opt = torch.optim.Adam([p for p in model.parameters() if p.requires_grad],
                            lr=cfg.get("lr", 1e-3))
@@ -204,7 +189,6 @@ def _train_prebuilt(model, cfg, tr, te, device):
 
 
 def _temp_scale(ev, thetas, C):
-    """Fit softmax temperature on half the test margins (proper: use val split)."""
     import torch.nn.functional as F
     logits, labels = ev["raw"]["logits"][:, -1], ev["raw"]["labels"]
     n = len(labels) // 2
@@ -251,7 +235,6 @@ def main():
             w = csv.DictWriter(f, fieldnames=keys)
             w.writeheader(); w.writerows(all_rows)
     print("done ->", out_dir)
-
 
 if __name__ == "__main__":
     main()

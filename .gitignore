@@ -1,7 +1,5 @@
-# Submitted paper files and local review notes are intentionally never public.
 AAAI/
 
-# Data, training output, caches, and notebook state.
 /data/
 /datasets/
 /checkpoints/
@@ -28,11 +26,8 @@ __pycache__/
 .mypy_cache/
 .coverage
 
-# The only committed checkpoints are the curated, validated ModelNet source
-# diagnostics documented under artifacts/source_diagnostics/.
 !/artifacts/source_diagnostics/weights/**/*.pt
 
-# Local environment configuration and editor metadata.
 .env
 .venv/
 venv/

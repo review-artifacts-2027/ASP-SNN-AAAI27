@@ -1,18 +1,3 @@
-"""
-eval_shapenet.py — Evaluate ASP-SNN on ShapeNetPart test set.
-
-Usage:
-    python eval_shapenet.py --ckpt checkpoints/shapenet_best.pt
-    python eval_shapenet.py --ckpt ... --per_cat
-    python eval_shapenet.py --ckpt ... --energy       # Batch 5: full energy report
-
-Batch 5 update — full energy report:
-    When --energy is passed, attaches spike-rate monitors to every spiking
-    component (LIF head, spiking encoder if used, spiking seg head if used)
-    and prints a full breakdown including system-level α ratio. This is the
-    number that goes in the paper's efficiency headline.
-"""
-
 import argparse
 import os
 import numpy as np
@@ -27,15 +12,7 @@ from datasets.shapenetpart import (
 from models.asp_segmentor import ASPSegmentor
 
 
-# ── Encoder LIF hook-based monitor (mirrors eval_scanobj.py) ──────────────
-
 class _EncoderSpikeMonitor:
-    """
-    Hooks the spiking encoder's LIF layers and records their spike outputs
-    to compute mean firing rate for the energy report. Attach with
-    .attach(spiking_encoder_impl), detach with .detach().
-    """
-
     def __init__(self):
         self.total_spikes = 0.0
         self.total_neurons = 0
@@ -43,22 +20,17 @@ class _EncoderSpikeMonitor:
 
     def _make_hook(self):
         def hook(module, inp, out):
-            # `out` is a spike tensor {0, 1}. Sum gives spike count; numel
-            # gives total neurons across the batch.
             self.total_spikes += float(out.sum().item())
             self.total_neurons += out.numel()
         return hook
 
     def attach(self, spiking_encoder_impl):
-        """Attach hooks to every _EncoderLIF found on the module tree."""
-        # Try known attribute names first for a clean hook.
         for name in ['lif1', 'lif2_edge', 'lif3', 'lif4']:
             layer = getattr(spiking_encoder_impl, name, None)
             if layer is not None:
                 h = layer.register_forward_hook(self._make_hook())
                 self._handles.append(h)
 
-        # Fallback: any submodule whose class name looks like a LIF layer.
         if len(self._handles) == 0:
             for m in spiking_encoder_impl.modules():
                 cls_name = m.__class__.__name__
@@ -80,8 +52,6 @@ class _EncoderSpikeMonitor:
         self.total_spikes = 0.0
         self.total_neurons = 0
 
-
-# ── mIoU (unchanged) ──────────────────────────────────────────────────────
 
 def compute_instance_miou(pred_parts, true_parts, cat_ids, n_points):
     n_shapes = len(cat_ids)
@@ -141,14 +111,12 @@ def main():
     set_seed(cfg.seed)
     device = cfg.device
 
-    # Dataset
     test_ds = ShapeNetPartDataset(cfg.data_dir, 'test', cfg)
     loader = DataLoader(
         test_ds, batch_size=cfg.batch_size, shuffle=False,
         num_workers=cfg.num_workers, pin_memory=True,
     )
 
-    # Model
     cfg.num_classes    = NUM_PARTS
     cfg.num_categories = NUM_CATEGORIES
     cfg.use_category   = True
@@ -175,7 +143,6 @@ def main():
     print(f"Seg head   : {seg_type}"
           f"{f'  (T_seg={cfg.seg_head_T})' if seg_type == 'spiking' else ''}")
 
-    # ── Batch 5: attach spike-rate monitors when --energy ──────────────
     head_logger    = None
     enc_monitor    = None
     seg_head_logger = None
@@ -183,11 +150,9 @@ def main():
     if args.energy:
         from models.lif import SpikeRateLogger
 
-        # LIF head (always spiking)
         head_logger = SpikeRateLogger()
         model.lif_head.spike_monitor = head_logger
 
-        # Spiking encoder (only if encoder_type == 'spiking')
         if enc_type == 'spiking':
             impl = getattr(model.feature_extractor, 'impl', None)
             if impl is not None and impl.__class__.__name__ == 'SpikingEdgeConvEncoder':
@@ -198,7 +163,6 @@ def main():
                       "not found on model.feature_extractor.impl — encoder "
                       "firing rate will not be measured.")
 
-        # Spiking seg head (only if seg_head_type == 'spiking')
         if seg_type == 'spiking':
             seg_head_logger = SpikeRateLogger()
             if hasattr(model.seg_head, 'spike_monitor'):
@@ -208,7 +172,6 @@ def main():
                       "spike_monitor attribute — seg-head firing rate will "
                       "not be measured.")
 
-    # ── Evaluate ──────────────────────────────────────────────────────
     all_preds, all_true, all_cats = [], [], []
 
     with torch.no_grad():
@@ -264,7 +227,6 @@ def main():
             bar = "#" * int(iou * 30)
             print(f"    {name:<14} {iou*100:5.1f}%  {bar}")
 
-    # ── Batch 5: Energy report ────────────────────────────────────────
     if args.energy:
         from models.energy import compute_energy, print_energy_report
 
@@ -280,7 +242,6 @@ def main():
         )
         print_energy_report(energy)
 
-        # Detach monitors for cleanliness
         model.lif_head.spike_monitor = None
         if enc_monitor is not None:
             enc_monitor.detach()
@@ -288,7 +249,6 @@ def main():
             model.seg_head.spike_monitor = None
 
     print()
-
 
 if __name__ == "__main__":
     main()

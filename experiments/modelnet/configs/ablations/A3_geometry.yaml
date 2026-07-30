@@ -1,8 +1,3 @@
-# A3 — Geometry-descriptor component ablation (zeroed one at a time, plus
-# centroid group). Theorem 6 predicts impact ordering follows the component's
-# task information; spread should dominate EARLY steps (diffuse belief ->
-# max-entropy saliency), centroid/dist later. Logged: accuracy, avg_slices,
-# per-step drift, selection-agreement (Kendall tau) with the full model.
 experiment: A3_geometry
 type: standard
 eval_thetas: [0.7]

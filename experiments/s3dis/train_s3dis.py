@@ -1,25 +1,3 @@
-"""
-train_s3dis.py — Train ASP-SNN on S3DIS Area 5 scene segmentation.
-
-Tier A upgrades:
-  A4. TET-style loss (equal-weight per-timestep CE + MSE regularization),
-      replacing the previous weighted-sum + confidence-penalty loss which
-      was actively rewarding overconfidence.
-  Mid-epoch eval uses evaluate_s3dis_aggregated (A1) so training-time
-  mIoU reflects the true test-time metric.
-
-Tier B upgrade:
-  B1. Lovász-Softmax auxiliary loss — directly optimizes mIoU, the eval
-      metric. Especially valuable on tail classes (beam, column, board)
-      that dominate the macro-averaged mIoU gap.
-      Reference: Berman et al. CVPR 2018.
-
-Tier E upgrade:
-  E1. Room-level ASP prior — precomputed room summaries are projected into
-      the initial LIF belief state u_0 via a zero-init learnable projection,
-      seeding the ASP loop with room-level context instead of zeros.
-"""
-
 import argparse
 import math
 import os
@@ -42,9 +20,6 @@ from models.lovasz_losses import LovaszSoftmaxLoss
 from eval_s3dis import evaluate_s3dis_aggregated, compute_metrics
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Plotting helper (best-effort)
-# ─────────────────────────────────────────────────────────────────────────────
 def plot_training_curves(log_path: str, out_dir: str):
     try:
         import matplotlib
@@ -53,7 +28,7 @@ def plot_training_curves(log_path: str, out_dir: str):
 
         epochs, losses, mious, maccs, oas, lrs = [], [], [], [], [], []
         with open(log_path, 'r') as f:
-            f.readline()  # header
+            f.readline()
             for line in f:
                 parts = line.strip().split(',')
                 if len(parts) < 7:
@@ -106,12 +81,7 @@ def plot_training_curves(log_path: str, out_dir: str):
         print(f"[Plot] Warning: could not generate plot ({e})")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  KD teacher (PointNet-style per-point segmentation)
-# ─────────────────────────────────────────────────────────────────────────────
 class PointNetSegTeacher(nn.Module):
-    """Lightweight PointNet segmentation teacher for knowledge distillation."""
-
     def __init__(self, num_classes: int, in_channels: int = 7):
         super().__init__()
         self.local_mlp = nn.Sequential(
@@ -128,32 +98,28 @@ class PointNetSegTeacher(nn.Module):
             nn.Conv1d(256, num_classes, 1),
         )
 
-    def forward(self, pts_feat):  # [B, N, C]
-        x = pts_feat.permute(0, 2, 1)                # [B, C, N]
-        local_feat = self.local_mlp(x)               # [B, 128, N]
+    def forward(self, pts_feat):
+        x = pts_feat.permute(0, 2, 1)
+        local_feat = self.local_mlp(x)
         global_feat = self.global_mlp(local_feat) \
-            .max(dim=-1, keepdim=True).values         # [B, 1024, 1]
+            .max(dim=-1, keepdim=True).values
         global_feat = global_feat.expand(
-            -1, -1, local_feat.size(-1))              # [B, 1024, N]
+            -1, -1, local_feat.size(-1))
         combined = torch.cat(
-            [local_feat, global_feat], dim=1)         # [B, 1152, N]
-        return self.seg_head(combined).permute(0, 2, 1)  # [B, N, C]
+            [local_feat, global_feat], dim=1)
+        return self.seg_head(combined).permute(0, 2, 1)
 
 
 def seg_kd_loss(student_logits, teacher_logits,
                 T: float = 4.0) -> torch.Tensor:
-    """Per-point KL divergence loss for segmentation KD."""
+
     B, N, C = student_logits.shape
     s = F.log_softmax(student_logits.reshape(B * N, C) / T, dim=-1)
     t = F.softmax(teacher_logits.detach().reshape(B * N, C) / T, dim=-1)
     return F.kl_div(s, t, reduction="batchmean") * (T * T)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Metric helper
-# ─────────────────────────────────────────────────────────────────────────────
 def compute_iou(pred: np.ndarray, target: np.ndarray, num_classes: int):
-    """Compute per-class IoU, mIoU, OA, and mAcc."""
     ious, accs = [], []
     for c in range(num_classes):
         pred_c = (pred == c)
@@ -171,43 +137,16 @@ def compute_iou(pred: np.ndarray, target: np.ndarray, num_classes: int):
                             for i in range(num_classes)}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  A4: TET loss replacing active_loss_seg
-# ─────────────────────────────────────────────────────────────────────────────
 def active_loss_seg_tet(logits_final, logits_all, labels, criterion,
                         tet_lambda: float = 0.05):
-    """
-    TET loss for segmentation: equal-weight mean of per-timestep CE, with
-    optional MSE regularization pulling each timestep toward the final.
 
-    Reference: Deng et al. "Temporal Efficient Training of Spiking Neural
-    Networks via Gradient Re-weighting", ICLR 2022.
-
-    Replaces active_loss_seg which used quadratic-ramp + confidence penalty.
-    The penalty rewarded overconfidence and hurt mIoU on rare classes.
-
-    Args:
-        logits_final: [B*N, C]  final-timestep logits, flattened
-        logits_all:   list of [B, N, C]  per-timestep logits (or belief list)
-        labels:       [B*N]     flattened ground-truth labels
-        criterion:    nn.CrossEntropyLoss (with class weights + ignore_index)
-        tet_lambda:   MSE reg weight (0 disables)
-
-    Returns:
-        loss: scalar
-    """
     if not logits_all:
         return criterion(logits_final, labels)
 
     C = logits_final.shape[-1]
 
-    # Check if logits_all contains actual per-timestep logits or belief states.
-    # Belief states from ASPSegmentor have shape [B, hidden_dim] (no N dim),
-    # while per-timestep logits have shape [B, N, C].
-    # Only apply TET CE if they are actually per-timestep logits.
     first = logits_all[0]
     if first.dim() == 3 and first.shape[-1] == C:
-        # Per-timestep logits available (dense_tet mode)
         ce_terms = torch.stack([
             criterion(l.reshape(-1, C), labels) for l in logits_all
         ])
@@ -223,14 +162,9 @@ def active_loss_seg_tet(logits_final, logits_all, labels, criterion,
 
         return loss
     else:
-        # logits_all contains belief states, not logits — fall back to
-        # single-timestep CE on the final output.
         return criterion(logits_final, labels)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Main
-# ─────────────────────────────────────────────────────────────────────────────
 def main():
     parser = base_argparser("ASP-SNN S3DIS Training")
     args = parser.parse_args()
@@ -256,7 +190,6 @@ def main():
     print(f"  Device: {device}")
     print(f"{'='*60}\n")
 
-    # ── Datasets ──────────────────────────────────────────────────────
     train_ds = S3DISDataset(cfg.data_dir, 'train', cfg)
     test_ds = S3DISDataset(cfg.data_dir, 'test', cfg)
 
@@ -268,7 +201,6 @@ def main():
         drop_last=drop_last, persistent_workers=pw,
     )
 
-    # ── Class weights ─────────────────────────────────────────────────
     class_weights = None
     if getattr(cfg, 'use_class_weights', True):
         weights_np = compute_class_weights(cfg.data_dir, test_area)
@@ -276,7 +208,6 @@ def main():
         print(f"[Weights] class weights: "
               f"{[f'{w:.2f}' for w in weights_np.tolist()]}")
 
-    # ── Model ─────────────────────────────────────────────────────────
     in_ch = 3
     if getattr(cfg, 'use_rgb', True):
         in_ch += 3
@@ -287,7 +218,6 @@ def main():
     cfg.use_category = False
     cfg.num_categories = 0
 
-    # ── KD teacher setup ─────────────────────────────────────────────
     os.makedirs(cfg.ckpt_dir, exist_ok=True)
     kd_teacher = None
     kd_teacher_epochs = int(getattr(cfg, 'kd_teacher_epochs', 0))
@@ -327,7 +257,6 @@ def main():
                 log_every_t = max(1, n_t_batches // 10)
 
                 for batch_idx_t, batch_data_t in enumerate(train_loader):
-                    # Teacher only needs pts_feat and labels
                     pts_feat_b = batch_data_t[2].to(device, non_blocking=True)
                     sem_labels_b = batch_data_t[4].to(device, non_blocking=True)
 
@@ -363,7 +292,6 @@ def main():
 
         kd_teacher.eval()
 
-    # ── Student model ─────────────────────────────────────────────────
     model = ASPSegmentor(cfg).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_params:,}")
@@ -371,7 +299,6 @@ def main():
           f"{'+rgb' if getattr(cfg, 'use_rgb', True) else ''}"
           f"{'+height' if getattr(cfg, 'use_height', True) else ''})")
 
-    # ── Optimizer ─────────────────────────────────────────────────────
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay,
     )
@@ -393,13 +320,11 @@ def main():
         ignore_index=-1,
     )
 
-    # ── Loss mode (A4: TET) ──────────────────────────────────────────
     loss_mode = getattr(cfg, 'loss_mode', 'tet')
     tet_lambda = float(getattr(cfg, 'tet_lambda', 0.05))
     print(f"Loss mode: {loss_mode}"
           + (f" (TET lambda={tet_lambda})" if loss_mode == 'tet' else ""))
 
-    # ── B1: Lovász-Softmax auxiliary loss ─────────────────────────────
     use_lovasz = getattr(cfg, 'use_lovasz', True)
     lovasz_lambda = float(getattr(cfg, 'lovasz_lambda', 1.0))
     lovasz_criterion = LovaszSoftmaxLoss(
@@ -408,20 +333,18 @@ def main():
     if use_lovasz:
         print(f"Lovász-Softmax loss: enabled (λ={lovasz_lambda})")
 
-    # ── E1: room-level prior config ──────────────────────────────────
     use_room_prior = getattr(cfg, 'use_room_prior', False)
     if use_room_prior:
         print(f"Room-level prior (E1): enabled "
               f"(K_room={getattr(cfg, 'room_prior_anchors', 64)}, "
               f"k={getattr(cfg, 'room_prior_k', 32)})")
 
-    # ── Resume ────────────────────────────────────────────────────────
     start_epoch = 0
     best_miou = 0.0
     if args.resume and os.path.exists(args.resume):
         ckpt = torch.load(args.resume, map_location=device,
                           weights_only=False)
-        # Tolerate missing keys (new E1 projection layers won't be in old ckpt)
+
         missing, unexpected = model.load_state_dict(
             ckpt['model'], strict=False,
         )
@@ -438,7 +361,6 @@ def main():
         print(f"Resumed from epoch {start_epoch}, "
               f"best mIoU: {best_miou*100:.2f}%")
 
-    # ── Logging ───────────────────────────────────────────────────────
     os.makedirs(cfg.log_dir, exist_ok=True)
     shared_log_path = os.path.join(cfg.log_dir, 's3dis_train_log.csv')
     log_path = shared_log_path
@@ -446,7 +368,6 @@ def main():
         with open(log_path, 'w') as f:
             f.write("epoch,train_loss,miou,macc,oa,lr,time\n")
 
-    # ── Training loop ─────────────────────────────────────────────────
     for epoch in range(start_epoch, cfg.epochs):
         t0 = time.time()
 
@@ -457,21 +378,12 @@ def main():
            hasattr(model.lif_head, 'reset_spike_stats'):
             model.lif_head.reset_spike_stats()
 
-        # ── Train ─────────────────────────────────────────────────────
         model.train()
         total_loss = n_batches = 0
         n_total_batches = len(train_loader)
         log_every = max(1, n_total_batches // 20)
 
         for batch_idx, batch_data in enumerate(train_loader):
-            # ── Unpack (handles with/without room prior) ──────────
-            #
-            # Dataset returns:
-            #   Without room prior: (slices, geo, pts_feat, sid_arr,
-            #                        sem_labels, cat_id)              → 6 items
-            #   With room prior:    (slices, geo, pts_feat, sid_arr,
-            #                        sem_labels, cat_id, room_summary) → 7 items
-            #
             slices       = batch_data[0].to(device, non_blocking=True)
             geo          = batch_data[1].to(device, non_blocking=True)
             pts_feat     = batch_data[2].to(device, non_blocking=True)
@@ -492,7 +404,6 @@ def main():
                 )
                 B, N, C = logits_final.shape
 
-                # A4: TET loss (equal-weight per-timestep CE + MSE reg)
                 loss = active_loss_seg_tet(
                     logits_final.reshape(B * N, C),
                     logits_all,
@@ -501,14 +412,10 @@ def main():
                     tet_lambda=tet_lambda,
                 )
 
-                # B1: Lovász-Softmax on final-timestep logits.
-                # Applied only to final logits (not per-timestep) because
-                # Lovász is expensive (sort per class per point).
                 if lovasz_criterion is not None:
                     lov = lovasz_criterion(logits_final, sem_labels)
                     loss = loss + lovasz_lambda * lov
 
-                # KD loss (if teacher exists)
                 if kd_teacher is not None:
                     with torch.no_grad():
                         t_logits = kd_teacher(pts_feat)
@@ -516,7 +423,6 @@ def main():
                         logits_final, t_logits, kd_temp,
                     )
 
-                # Spike firing-rate penalty (if applicable)
                 if hasattr(model, 'lif_head') and \
                    hasattr(model.lif_head, 'mean_firing_rate'):
                     loss = loss + 0.01 * model.lif_head.mean_firing_rate()
@@ -549,7 +455,6 @@ def main():
         train_loss = total_loss / max(n_batches, 1)
         lr_now = optimizer.param_groups[0]['lr']
 
-        # ── Eval (A1: room-aggregated, single vote during training) ──
         eval_interval = getattr(cfg, 'eval_interval', 5)
         if (epoch + 1) % eval_interval == 0 or epoch == cfg.epochs - 1:
             model.eval()
@@ -570,7 +475,6 @@ def main():
                 f"OA={oa*100:.2f}% | {elapsed:.0f}s"
             )
 
-            # Per-class print every eval so we track tail class progress
             for name, iou in sorted(
                 per_class.items(),
                 key=lambda x: x[1] if not np.isnan(x[1]) else 0,
@@ -605,7 +509,6 @@ def main():
                 f"loss={train_loss:.4f} | {elapsed:.0f}s"
             )
 
-        # Save last for resume
         torch.save({
             'epoch': epoch + 1,
             'model': model.state_dict(),
@@ -622,7 +525,6 @@ def main():
           f"--n_votes 3 --per_class")
 
     plot_training_curves(log_path, cfg.log_dir)
-
 
 if __name__ == "__main__":
     main()

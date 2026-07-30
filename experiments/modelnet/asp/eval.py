@@ -1,5 +1,3 @@
-"""Single-pass evaluation: stores full trajectories so every theta-dependent
-metric (A1 sweep, drift, exits, selective risk) comes from ONE inference run."""
 from __future__ import annotations
 
 import torch
@@ -16,8 +14,8 @@ def collect(model, loader, device="cpu", keep_membrane=False) -> dict:
     for batch in loader:
         regions, desc, anchors, labels = [b.to(device) if b is not None else None
                                           for b in batch]
-        o = model.forward_infer(regions, desc, anchors, theta=2.0,  # never exit early;
-                                keep_membrane=keep_membrane)        # exits re-derived
+        o = model.forward_infer(regions, desc, anchors, theta=2.0,
+                                keep_membrane=keep_membrane)
         outs["logits"].append(o["logits"])
         outs["margins"].append(o["margins"])
         outs["selections"].append(o["selections"])

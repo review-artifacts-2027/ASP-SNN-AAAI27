@@ -1,23 +1,3 @@
-"""
-train_shapenet.py — Train ASP-SNN on ShapeNetPart part segmentation.
-
-Multi-GPU update (Kaggle T4 x2):
-    - Auto-wraps the model in nn.DataParallel when torch.cuda.device_count() > 1.
-    - torch.backends.cudnn.benchmark = True for consistent fast kernels.
-    - Uses `unwrap(model)` helper to reach model attributes through DP.
-    - State-dict save/load and warm-start use `unwrap(model)` so checkpoints
-      stay clean single-GPU-shaped and load fine on any config later.
-
-    On Kaggle T4 x2:
-      Effective throughput ~1.7x per epoch vs. single T4.
-      Use --set batch_size=32 num_workers=8 to maximize the win.
-
-Batch 5 upgrade (B3 wiring):
-    - cfg.warm_start_from: optional path to an analog-trained checkpoint.
-      When set, the encoder's Conv/Linear weights are loaded into the newly-
-      instantiated spiking encoder before training begins.
-"""
-
 import math
 import os
 import time
@@ -38,14 +18,9 @@ from datasets.shapenetpart import (
 from models.asp_segmentor import ASPSegmentor
 
 
-# ── Multi-GPU helper ──────────────────────────────────────────────────────
-
 def unwrap(model):
-    """Return the underlying model regardless of DataParallel wrapping."""
     return model.module if isinstance(model, nn.DataParallel) else model
 
-
-# ── Loss helpers (unchanged) ──────────────────────────────────────────────
 
 def _make_valid_mask(cat_ids, num_parts, device):
     B = cat_ids.shape[0]
@@ -120,15 +95,7 @@ def compute_boundary_loss(bnd_logits, bnd_labels, pos_weight=None):
     )
 
 
-# ── B3: ANN → SNN warm-start ─────────────────────────────────────────────
-
 def warm_start_encoder_from_analog(model, ckpt_path: str, device):
-    """
-    Load an analog-trained checkpoint's compatible weights into `model`.
-    Loads ALL matching tensors via strict=False so that when analog Batch 4
-    -> spiking Batch 5, everything except the LIF-specific tensors carries
-    forward (head, seg_head, boundary_head, SSP, etc.).
-    """
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"warm_start_from checkpoint not found: {ckpt_path}")
 
@@ -146,8 +113,6 @@ def warm_start_encoder_from_analog(model, ckpt_path: str, device):
 
     return loaded, unexpected
 
-
-# ── mIoU (unchanged) ──────────────────────────────────────────────────────
 
 def compute_instance_miou(pred_parts, true_parts, cat_ids, n_points):
     n_shapes = len(cat_ids)
@@ -190,10 +155,7 @@ def compute_instance_miou(pred_parts, true_parts, cat_ids, n_points):
     return inst_miou, cls_miou, per_cat
 
 
-# ── Main ──────────────────────────────────────────────────────────────────
-
 def main():
-    # ── Multi-GPU speed knobs ─────────────────────────────────────────
     torch.backends.cudnn.benchmark = True
 
     parser = base_argparser("ASP-SNN ShapeNetPart Training")
@@ -205,7 +167,6 @@ def main():
     set_seed(cfg.seed)
     device = cfg.device
 
-    # Detect multi-GPU
     n_gpus = torch.cuda.device_count()
     use_dp = (n_gpus > 1) and (device.type == 'cuda')
 
@@ -226,7 +187,6 @@ def main():
           f"{'  (DataParallel)' if use_dp else ''}")
     print(f"{'='*60}\n")
 
-    # ── Datasets ──────────────────────────────────────────────────────
     train_ds = ShapeNetPartDataset(cfg.data_dir, 'train', cfg)
     test_ds  = ShapeNetPartDataset(cfg.data_dir, 'test',  cfg)
 
@@ -243,7 +203,6 @@ def main():
         persistent_workers=pw_,
     )
 
-    # ── Model (unwrapped for now) ─────────────────────────────────────
     cfg.num_classes    = NUM_PARTS
     cfg.num_categories = NUM_CATEGORIES
     cfg.use_category   = True
@@ -253,11 +212,9 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_params:,}")
 
-    # ── Warm-start (BEFORE DataParallel wrapping) ─────────────────────
     if warm_start:
         warm_start_encoder_from_analog(model, warm_start, device)
 
-    # ── Loss config ───────────────────────────────────────────────────
     loss_mode        = getattr(cfg, 'loss_mode', 'ce')
     tet_lambda       = getattr(cfg, 'tet_lambda', 0.0)
     bnd_loss_weight  = getattr(cfg, 'bnd_loss_weight', 0.1)
@@ -267,7 +224,6 @@ def main():
     if use_bnd:
         print(f"Boundary BCE weight: {bnd_loss_weight}")
 
-    # ── Optimizer (uses UNWRAPPED model params) ───────────────────────
     enc_scale = getattr(cfg, 'encoder_lr_scale', 0.1)
     encoder_params = (
         list(model.feature_extractor.parameters()) +
@@ -297,7 +253,6 @@ def main():
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     scaler = GradScaler(enabled=cfg.use_amp)
 
-    # ── Resume (BEFORE DataParallel wrapping) ─────────────────────────
     start_epoch = 0
     best_inst_iou = 0.0
     if args.resume and os.path.exists(args.resume):
@@ -314,25 +269,21 @@ def main():
         best_inst_iou = ckpt.get('best_metric', 0.0)
         print(f"Resumed from epoch {start_epoch}, best mIoU: {best_inst_iou*100:.2f}%")
 
-    # ── Wrap in DataParallel AFTER checkpoint loading + optimizer setup ─
     if use_dp:
         gpu_ids = list(range(n_gpus))
         model = nn.DataParallel(model, device_ids=gpu_ids)
         print(f"[DP] Wrapping model with DataParallel across GPUs {gpu_ids}\n")
 
-    # ── Logging ───────────────────────────────────────────────────────
     run_name = f"shapenet_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     log_path = os.path.join(cfg.log_dir, f"{run_name}.csv")
     with open(log_path, 'w') as f:
         f.write("epoch,train_loss,inst_miou,cls_miou,lr,time\n")
 
-    # ── Training loop ─────────────────────────────────────────────────
     for epoch in range(start_epoch, cfg.epochs):
         t0 = time.time()
 
         tau = max(cfg.tau_end, cfg.tau_start * (cfg.tau_decay ** epoch))
-        # gumbel_tau is a buffer on the unwrapped model; DP replicas will
-        # see the updated value on the next forward call.
+
         unwrap(model).gumbel_tau.fill_(tau)
 
         model.train()
@@ -400,7 +351,6 @@ def main():
         train_loss = total_loss / max(n_batches, 1)
         lr_now = optimizer.param_groups[-1]['lr']
 
-        # ── Eval ──────────────────────────────────────────────────────
         eval_interval = getattr(cfg, 'eval_interval', 5)
         if (epoch + 1) % eval_interval == 0 or epoch == cfg.epochs - 1:
             model.eval()
@@ -463,7 +413,7 @@ def main():
 
             if inst_iou > best_inst_iou:
                 best_inst_iou = inst_iou
-                # Save UNWRAPPED state_dict so checkpoint is portable
+
                 torch.save({
                     'epoch': epoch + 1,
                     'model': unwrap(model).state_dict(),
@@ -488,7 +438,6 @@ def main():
                 f"loss={train_loss:.4f} | {elapsed:.0f}s"
             )
 
-        # Save UNWRAPPED last checkpoint for resume
         torch.save({
             'epoch': epoch + 1,
             'model': unwrap(model).state_dict(),
@@ -500,7 +449,6 @@ def main():
 
     print(f"\nDone. Best Instance mIoU: {best_inst_iou*100:.2f}%")
     print(f"Checkpoint: {cfg.ckpt_dir}/shapenet_best.pt")
-
 
 if __name__ == "__main__":
     main()

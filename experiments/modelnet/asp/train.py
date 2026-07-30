@@ -1,28 +1,3 @@
-"""Training loop — Phase 1 (recipe) + Phase 2 (TET loss) + Phase 3 (Mixup/CutMix)
-    + Phase 7 (KD from a ResNet-18 teacher, optional).
-
-Phase 7 delta on top of Phase 3:
-    * If `teacher_ckpt` is set in the config, `train_model` loads a
-      frozen teacher (asp/kd.py::build_teacher_from_config) and calls it
-      inside a `@torch.no_grad()` block on every batch, feeding the
-      teacher's logits into `composite_loss(..., teacher_logits=...)`.
-    * The KD term itself was already wired into `composite_loss` at
-      Phase 2 (see the `teacher_logits is not None` branch), using the
-      LAST timestep's student logits and the Hinton KL-divergence form
-          loss += lambda_kd * KL(student_final/T | teacher/T) * T^2
-    * The teacher receives the SAME normalised image the student sees.
-      When Mixup / CutMix is active, the mixed patches are reconstructed
-      back into an image before being fed to
-      the teacher — this keeps the KD signal alignment intact.
-    * When `teacher_ckpt` is null or the checkpoint fails to load, KD is
-      silently disabled and the loop behaves EXACTLY as Phase 3 (byte-
-      identical to the pre-Phase-7 file for that batch's forward+loss).
-
-All Phase 1 + Phase 2 + Phase 3 behaviour is preserved:
-    * AdamW / warmup+cosine / bf16 AMP / grad clip 1.0 / label smoothing.
-    * TET default loss with `tet_lambda = 0.05` MSE regulariser.
-    * Batch-level Mixup / CutMix until `mix_off_epoch` (default 2*epochs//3).
-"""
 from __future__ import annotations
 
 import math
@@ -35,9 +10,6 @@ import torch.nn.functional as F
 from .model import ASPConfig, ASPModel
 
 
-# ─────────────────────────────────────────────────────────────────────
-#  Loss  (identical to Phase 3 — the KD branch was wired in at Phase 2)
-# ─────────────────────────────────────────────────────────────────────
 def composite_loss(out: dict, labels: torch.Tensor,
                    lambda_exit: float = 0.0,
                    lambda_sparse: float = 0.005,
@@ -49,23 +21,10 @@ def composite_loss(out: dict, labels: torch.Tensor,
                    loss_mode: str = "tet",
                    tet_lambda: float = 0.05,
                    ) -> torch.Tensor:
-    """Composite loss with hard-target OR soft-target auto-dispatch.
 
-    Terms:
-        CE       :  per-timestep, hard-target (with label smoothing) OR
-                    soft-target (Mixup / CutMix).
-        TET reg  :  MSE between earlier steps and the final step (stop-grad
-                    on the final step). Only in loss_mode='tet'.
-        Sparsity :  lambda_sparse * mean firing rate.
-        KD       :  KL divergence between student LAST-STEP logits and
-                    teacher logits at temperature T. Only when
-                    `teacher_logits` is not None. Weighted by lambda_kd
-                    with the standard T^2 scaling from Hinton et al. 2015.
-    """
-    logits = out["logits"]                                  # (B, T, C)
+    logits = out["logits"]
     B, T, C = logits.shape
 
-    # ─ Per-timestep CE (auto-dispatch on hard vs soft targets) ─────────
     if labels.ndim == 1:
         tgt = labels.unsqueeze(1).expand(B, T).reshape(-1)
         ce = F.cross_entropy(
@@ -86,11 +45,10 @@ def composite_loss(out: dict, labels: torch.Tensor,
         )
     loss = ce
 
-    # ─ Mode-specific auxiliary ──────────────────────────────────────────
     if loss_mode == "tet":
         if tet_lambda > 0.0 and T > 1:
-            final_sg = logits[:, -1, :].detach()            # (B, C)  sg[ŷ_T]
-            earlier  = logits[:, :-1, :]                    # (B, T-1, C)
+            final_sg = logits[:, -1, :].detach()
+            earlier  = logits[:, :-1, :]
             mse = F.mse_loss(
                 earlier,
                 final_sg.unsqueeze(1).expand_as(earlier),
@@ -110,11 +68,9 @@ def composite_loss(out: dict, labels: torch.Tensor,
             f"(expected 'tet' or 'legacy')"
         )
 
-    # ─ Spike-sparsity regulariser (both modes) ──────────────────────────
     if lambda_sparse > 0.0 and "firing_rate" in out:
         loss = loss + lambda_sparse * out["firing_rate"]
 
-    # ─ KD (Phase 7 activation) — Hinton et al. 2015 ────────────────────
     if teacher_logits is not None:
         if teacher_logits.shape != (B, C):
             raise ValueError(
@@ -129,12 +85,9 @@ def composite_loss(out: dict, labels: torch.Tensor,
     return loss
 
 
-# ─────────────────────────────────────────────────────────────────────
-#  Schedule helpers  (unchanged since Phase 1)
-# ─────────────────────────────────────────────────────────────────────
 def anneal_tau(epoch: int, total: int,
                start: float = 1.0, end: float = 0.5) -> float:
-    """Linear anneal of Gumbel temperature from start to end across epochs."""
+
     return start + (end - start) * min(epoch / max(total - 1, 1), 1.0)
 
 
@@ -142,7 +95,7 @@ def build_scheduler(optimizer: torch.optim.Optimizer,
                     epochs: int,
                     warmup_epochs: int,
                     min_lr_ratio: float = 0.01) -> torch.optim.lr_scheduler.LambdaLR:
-    """Linear warmup (0.1x -> 1x peak) then cosine decay to `min_lr_ratio`."""
+
     def lr_lambda(epoch: int) -> float:
         if epoch < warmup_epochs:
             return 0.1 + 0.9 * (epoch / max(warmup_epochs, 1))
@@ -153,9 +106,6 @@ def build_scheduler(optimizer: torch.optim.Optimizer,
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-# ─────────────────────────────────────────────────────────────────────
-#  AMP helpers  (unchanged since Phase 1)
-# ─────────────────────────────────────────────────────────────────────
 def _amp_supported(device: torch.device | str) -> bool:
     if isinstance(device, str):
         if device == "cpu":
@@ -184,37 +134,9 @@ def _autocast_ctx(device: torch.device | str, dtype: torch.dtype):
         return nullcontext()
 
 
-# ─────────────────────────────────────────────────────────────────────
-#  Training loop  (Phase 1 recipe + Phase 2 loss + Phase 3 mixer + Phase 7 KD)
-# ─────────────────────────────────────────────────────────────────────
 def train_model(cfg: dict, train_loader, test_loader,
                 device: str = "cpu", log_fn=print) -> tuple[ASPModel, list[dict]]:
-    """Train an ASPModel with the Phase 7 combined recipe/loss/aug/KD.
 
-    Config keys read (all optional, defaults shown):
-
-        # Training recipe (Phase 1)
-        epochs, warmup_epochs, lr, weight_decay, min_lr_ratio,
-        label_smoothing, grad_clip, use_amp
-
-        # Loss (Phase 2)
-        loss_mode ("tet"), tet_lambda (0.05),
-        lambda_sparse (0.005), lambda_exit (0.0), entropy_beta (0.1)
-
-        # Mixup / CutMix (Phase 3)
-        mixup_alpha (0.2), cutmix_alpha (1.0),
-        cutmix_prob (0.5), mix_prob (1.0), mix_off_epoch (2*epochs//3),
-        mix_grid_hw ([4,4]), mix_patch_hw ([8,8]), mix_in_channels (3)
-
-        # Knowledge Distillation (Phase 7)
-        teacher_ckpt (null)      -> path to a .pt file; null disables KD.
-        teacher_arch (optional external teacher identifier)
-        lambda_kd (0.5)          -> weight of the KL term.
-        kd_temp   (4.0)          -> temperature T for softening.
-
-        # Gumbel + eval
-        tau_start (1.0), tau_end (0.5), eval_every (5)
-    """
     mcfg = ASPConfig.from_dict(cfg)
     model = ASPModel(mcfg).to(device)
 
@@ -226,16 +148,12 @@ def train_model(cfg: dict, train_loader, test_loader,
     label_smooth   = float(cfg.get("label_smoothing", 0.1))
     grad_clip      = float(cfg.get("grad_clip", 1.0))
 
-    # Loss config (Phase 2)
     loss_mode      = str(cfg.get("loss_mode", "tet")).lower()
     tet_lambda     = float(cfg.get("tet_lambda", 0.05))
     lambda_sparse  = float(cfg.get("lambda_sparse", 0.005))
     lambda_exit    = float(cfg.get("lambda_exit", 0.0))
     entropy_beta   = float(cfg.get("entropy_beta", 0.1))
 
-    # Mixup/CutMix config (Phase 3)
-    # The public point-cloud configurations do not use image mixing.  Keep
-    # these opt-in rather than importing an unrelated image-only utility.
     mixup_alpha    = float(cfg.get("mixup_alpha", 0.0))
     cutmix_alpha   = float(cfg.get("cutmix_alpha", 0.0))
     cutmix_prob    = float(cfg.get("cutmix_prob", 0.5))
@@ -246,7 +164,6 @@ def train_model(cfg: dict, train_loader, test_loader,
     mix_patch_hw   = tuple(cfg.get("mix_patch_hw", (8, 8)))
     mix_in_ch      = int(cfg.get("mix_in_channels", 3))
 
-    # KD config (Phase 7)
     lambda_kd      = float(cfg.get("lambda_kd", 0.5))
     kd_temp        = float(cfg.get("kd_temp", 4.0))
 
@@ -263,12 +180,8 @@ def train_model(cfg: dict, train_loader, test_loader,
         log_fn("[amp] bf16 requested but not supported on this device; "
                "training in fp32.")
 
-    # Image-only mixing utilities are intentionally excluded.  Keep the
-    # public point-cloud training path deterministic and self-contained.
     mixer = None
 
-    # Distillation from an image teacher is outside this point-cloud archive.
-    # Fail early if a configuration accidentally enables that removed path.
     teacher = None
     if cfg.get("teacher_ckpt"):
         raise ValueError(
@@ -318,13 +231,11 @@ def train_model(cfg: dict, train_loader, test_loader,
                 b.to(device) if b is not None else None for b in batch
             ]
 
-            # ─ Phase 3: batch-level Mixup / CutMix ─────────────────────
             if mixer_active:
                 regions, desc, anchors, labels = mixer(
                     regions, desc, anchors, labels
                 )
 
-            # ─ Phase 7: teacher forward on the same (possibly-mixed) image ─
             teacher_logits = None
 
             optimizer.zero_grad(set_to_none=True)
@@ -345,7 +256,7 @@ def train_model(cfg: dict, train_loader, test_loader,
                     tet_lambda=tet_lambda,
                 )
 
-            loss.backward()                                 # bf16 needs no scaler
+            loss.backward()
             if grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()

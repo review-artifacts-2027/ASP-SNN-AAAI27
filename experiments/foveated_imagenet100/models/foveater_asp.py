@@ -1,24 +1,3 @@
-"""
-foveater_asp.py
-===============
-Image-domain ASP model based on the FoveaTer paper.
-
-The existing ASP stack in this repository works on point-cloud slices. This
-module keeps the same active perception interface while adapting it to
-ImageNet-style images:
-
-  image -> CNN feature map -> fixation-dependent foveated tokens
-        -> transformer -> class-token attention -> next fixation
-
-Main paper details retained here:
-  - 14 x 14 feature map for 224 x 224 images.
-  - Square foveated pooling regions with 1, 3, 5, and 7 receptive fields.
-  - Up to 29 pooled tokens per fixation, padded inside a batch.
-  - Class-token attention from the last block drives the next fixation.
-  - An inhibition-of-return map discourages revisiting the same region.
-  - Logits are produced from the average class-token state over fixations.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -45,14 +24,6 @@ class PoolSpec:
 
 
 def build_foveater_pool_specs() -> list[PoolSpec]:
-    """
-    Build a 49-center square foveation layout.
-
-    The paper describes 49 pooling centers in a 27 x 27 visual field with
-    receptive fields 1, 3, 5, and 7. This implementation uses a 7 x 7 lattice
-    around the current fixation. The central 3 x 3 lattice cells are treated as
-    foveal, no-pooling samples; outer cells use larger kernels.
-    """
     offsets = [-9, -6, -3, 0, 3, 6, 9]
     specs: list[PoolSpec] = []
 
@@ -64,7 +35,6 @@ def build_foveater_pool_specs() -> list[PoolSpec]:
             elif ring == 2:
                 kernel, scale_id = 3, 1
             else:
-                # Keep both large peripheral scales represented.
                 is_corner = abs(gy - 3) == 3 and abs(gx - 3) == 3
                 kernel, scale_id = (7, 3) if is_corner else (5, 2)
             specs.append(PoolSpec(dy=dy, dx=dx, kernel=kernel,
@@ -75,14 +45,6 @@ def build_foveater_pool_specs() -> list[PoolSpec]:
 
 
 class FoveaTerBackbone(nn.Module):
-    """
-    Small hybrid CNN stem that emits a 14 x 14 feature map for 224 x 224 input.
-
-    This matches the FoveaTer transformer-front-end assumption without adding a
-    heavyweight dependency on timm. It can be replaced by a stronger backbone
-    later as long as it returns [B, embed_dim, H, W].
-    """
-
     def __init__(self, embed_dim: int = 192):
         super().__init__()
         self.embed_dim = embed_dim
@@ -107,16 +69,6 @@ class FoveaTerBackbone(nn.Module):
 
 
 class FoveationModule(nn.Module):
-    """
-    Fixation-dependent square pooling over a CNN feature map.
-
-    Args:
-        max_tokens: paper default is 29 active tokens after dropping pooling
-            centers outside the original 14 x 14 image.
-        feature_grid: target feature-map grid size. Inputs are pooled to this
-            size by FoveaTerASP before this module runs.
-    """
-
     def __init__(self, max_tokens: int = 29, feature_grid: int = 14):
         super().__init__()
         self.max_tokens = max_tokens
@@ -128,17 +80,6 @@ class FoveationModule(nn.Module):
         features: torch.Tensor,
         fixations: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            features: [B, C, H, W]
-            fixations: [B, 2] integer feature-map coordinates in (y, x)
-
-        Returns:
-            tokens: [B, max_tokens, C]
-            valid_mask: [B, max_tokens], True for real tokens.
-            centers: [B, max_tokens, 2], feature-map coordinates for tokens.
-            scale_ids: [B, max_tokens], 0..3 for 1/3/5/7 pooling scales.
-        """
         bsz, channels, height, width = features.shape
         device = features.device
         dtype = features.dtype
@@ -188,8 +129,6 @@ class FoveationModule(nn.Module):
 
 
 class FoveaTerBlock(nn.Module):
-    """Transformer encoder block that returns attention weights."""
-
     def __init__(
         self,
         dim: int = 192,
@@ -234,14 +173,6 @@ class FoveaTerBlock(nn.Module):
 
 
 class FoveaTerASP(nn.Module):
-    """
-    Foveated Transformer with ASP-style sequential inference.
-
-    Public methods mirror the point-cloud ASP wrappers where possible:
-        forward_active_train(images) -> logits_final, logits_all
-        forward_active_infer(images, threshold) -> logits, exit_step, fixations
-    """
-
     def __init__(
         self,
         num_classes: int = 1000,
@@ -535,11 +466,9 @@ class FoveaTerASP(nn.Module):
         return logits
 
     def set_gumbel_tau(self, tau: float) -> None:
-        # Kept for compatibility with existing ASP training utilities.
         self.gumbel_tau.fill_(float(tau))
 
     def reset_state(self, batch_size: int, device=None) -> None:
-        # The image FoveaTer path is transformer-based and stateless.
         return None
 
     def get_firing_rates(self) -> dict:
@@ -573,7 +502,6 @@ class FoveaTerASP(nn.Module):
 
 
 def build_foveater_asp_tiny(num_classes: int = 1000, **kwargs) -> FoveaTerASP:
-    """Convenience builder matching the paper's DeiT-Tiny scale."""
     defaults = {
         "embed_dim": 192,
         "depth": 9,

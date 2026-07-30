@@ -1,9 +1,3 @@
-"""Synthetic geometric-primitive point clouds (8 classes).
-
-Purpose: CPU-runnable verification of every theoretical claim before GPU-scale
-runs, and controlled stress tests (occlusion/density) where ground-truth region
-informativeness is known by construction. NOT a benchmark substitute.
-"""
 from __future__ import annotations
 
 import math
@@ -23,10 +17,10 @@ def _unit(rng, n):
 
 def make_cloud(cls: int, n: int, rng: torch.Generator) -> torch.Tensor:
     u, v, w = _unit(rng, n), _unit(rng, n), _unit(rng, n)
-    if cls == 0:      # sphere (surface)
+    if cls == 0:
         th, ph = 2 * math.pi * u, torch.acos(2 * v - 1)
         p = torch.stack([th.cos() * ph.sin(), th.sin() * ph.sin(), ph.cos()], -1)
-    elif cls == 1:    # cube surface
+    elif cls == 1:
         face = (u * 6).long().clamp(max=5)
         a, b = 2 * v - 1, 2 * w - 1
         p = torch.zeros(n, 3)
@@ -37,23 +31,23 @@ def make_cloud(cls: int, n: int, rng: torch.Generator) -> torch.Tensor:
             p[m, axis] = sign
             p[m, other[0]] = a[m]
             p[m, other[1]] = b[m]
-    elif cls == 2:    # cylinder
+    elif cls == 2:
         th, z = 2 * math.pi * u, 2 * v - 1
         p = torch.stack([th.cos(), th.sin(), z], -1)
-    elif cls == 3:    # cone
+    elif cls == 3:
         th, h = 2 * math.pi * u, v
         r = 1 - h
         p = torch.stack([r * th.cos(), r * th.sin(), 2 * h - 1], -1)
-    elif cls == 4:    # torus
+    elif cls == 4:
         th, ph = 2 * math.pi * u, 2 * math.pi * v
         R, r = 1.0, 0.35
         p = torch.stack([(R + r * ph.cos()) * th.cos(),
                          (R + r * ph.cos()) * th.sin(), r * ph.sin()], -1)
-    elif cls == 5:    # pyramid (4 triangular faces + base)
+    elif cls == 5:
         base = torch.stack([2 * v - 1, 2 * w - 1, -torch.ones(n)], -1)
         apexward = u.unsqueeze(-1)
         p = base * (1 - apexward) + torch.tensor([0.0, 0.0, 1.0]) * apexward
-    elif cls == 6:    # 3D cross of 3 orthogonal bars
+    elif cls == 6:
         axis = (u * 3).long().clamp(max=2)
         p = (torch.stack([2 * v - 1, 2 * w - 1, _unit(rng, n) * 0.3 - 0.15], -1))
         out = torch.zeros(n, 3)
@@ -66,7 +60,7 @@ def make_cloud(cls: int, n: int, rng: torch.Generator) -> torch.Tensor:
             out[m.nonzero().squeeze(-1), cols[1]] = thick[:, 0]
             out[m.nonzero().squeeze(-1), cols[2]] = thick[:, 1]
         p = out
-    else:             # helix
+    else:
         t = 4 * math.pi * u
         p = torch.stack([0.8 * t.cos(), 0.8 * t.sin(), (t / (2 * math.pi)) - 1], -1)
         p = p + (torch.stack([v, w, _unit(rng, n)], -1) - 0.5) * 0.12
@@ -74,7 +68,7 @@ def make_cloud(cls: int, n: int, rng: torch.Generator) -> torch.Tensor:
 
 
 def augment(p: torch.Tensor, rng: torch.Generator, jitter: float = 0.01) -> torch.Tensor:
-    th = torch.rand(1, generator=rng).item() * 2 * math.pi   # z-rotation
+    th = torch.rand(1, generator=rng).item() * 2 * math.pi
     c, s = math.cos(th), math.sin(th)
     R = torch.tensor([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
     scale = 0.8 + 0.4 * torch.rand(1, generator=rng).item()

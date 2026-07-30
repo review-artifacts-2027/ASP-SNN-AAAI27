@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Full ImageNet/ImageNet-100 training:
-#   DATA_DIR=/path/to/imagenet NUM_CLASSES=1000 EPOCHS=500 bash scripts/run_imagenet_foveater.sh
-#   DATA_DIR=/path/to/imagenet100 NUM_CLASSES=100 EPOCHS=500 bash scripts/run_imagenet_foveater.sh
 
 DATA_DIR="${DATA_DIR:-data/imagenet}"
 NUM_CLASSES="${NUM_CLASSES:-1000}"
